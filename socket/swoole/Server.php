@@ -20,12 +20,18 @@ class Tcp_Server {
     /*
      *
      */
-    static $_instance = null;
+    static protected $_instance = null;
 
     /*
      *
      */
-    protected $_class = '';
+    static public function &factory($class, $serverName) {
+
+        if (!(self::$_instance instanceof self)) {
+            self::$_instance = new $class($serverName);
+        }
+        return self::$_instance;
+    }
 
     /*
      *
@@ -34,7 +40,6 @@ class Tcp_Server {
 
         // TODO check param
         $this->_serverName = $serverName;
-        $this->_class = __CLASS__;
     }
 
     /*
@@ -43,7 +48,18 @@ class Tcp_Server {
     public function init() {
 
         // 根据服务名称读取配置
-        $param = Config::get(basename(APP_PATH) . ".$this->_serverName." . 'param');//TODO config path
+        //$param = Config::get(basename(APP_PATH) . ".$this->_serverName." . 'param');//TODO config path
+        $param = array(
+            'host' => '127.0.0.1',
+            'port' => 9876,
+            'timeout' => 2.5,
+            'poll_thread_num' => 2,
+            'writer_num' => 4,
+            'worker_num' => 4,
+            'backlog' => 128,
+            'max_request' => 1000,
+            'daemonize' => 0,
+        );
 
         // 创建TCP服务
         $this->_serv = swoole_server_create($param['host'], $param['port'],
@@ -66,11 +82,11 @@ class Tcp_Server {
         swoole_server_handler($this->_serv, 'onTimer', array($this, 'onTimer'));
         swoole_server_handler($this->_serv, 'onMasterConnect', array($this, 'onMasterConnect'));
         swoole_server_handler($this->_serv, 'onMasterClose', array($this, 'onMasterClose'));
-        swoole_server_handler($this->_serv, 'onConnect', array($this->_class, 'onConnect'));
-        swoole_server_handler($this->_serv, 'onReceive', array($this->_class, 'onReceive'));
-        swoole_server_handler($this->_serv, 'onClose', array($this->_class, 'onClose'));
-        swoole_server_handler($this->_serv, 'onWorkerStart', array($this->_class, 'onWorkerStart'));
-        swoole_server_handler($this->_serv, 'onWorkerStop', array($this->_class, 'onWorkerStop'));
+        swoole_server_handler($this->_serv, 'onConnect', array($this, 'onConnect'));
+        swoole_server_handler($this->_serv, 'onReceive', array($this, 'onReceive'));
+        swoole_server_handler($this->_serv, 'onClose', array($this, 'onClose'));
+        swoole_server_handler($this->_serv, 'onWorkerStart', array($this, 'onWorkerStart'));
+        swoole_server_handler($this->_serv, 'onWorkerStop', array($this, 'onWorkerStop'));
     }
     
     /*
@@ -105,26 +121,29 @@ class Tcp_Server {
         echo "onTimer\n";
     }
 
-    static function onClose($serv, $clientId, $reactorId) {
+    function onClose($serv, $clientId, $reactorId) {
         // unset
         echo "onClose\n";
     }
 
-    static function onConnect($serv, $clientId, $reactorId) {
+    function onConnect($serv, $clientId, $reactorId) {
         echo "onConnect\n";
     }
 
-    static function onWorkerStart($serv, $workerId) {
+    function onWorkerStart($serv, $workerId) {
         echo "onWorkerStart\n";
     }
 
-    static function onWorkerStop($serv, $workerId) {
+    function onWorkerStop($serv, $workerId) {
         echo "onWorkerStop\n";
     }
 
-    static function onReceive($serv, $clientId, $reactorId, $data) {
+    function onReceive($serv, $clientId, $reactorId, $data) {
 
-        echo "onReceive\n";
+        $server = self::$_instance;
+        $resp = $server->response($data);
+        swoole_server_send($serv, $clientId, $resp);
+        echo "onReceive in parrent\n";
     }
 
     function onMasterClose($serv, $clientId, $reactorId) {
@@ -138,11 +157,25 @@ class Tcp_Server {
         $this->_clients[] = array($clientId, $reactorId);
     }
 
-    /*
-     *
-     */
-    static function response($request) {
-        return $request;
-    }
 }
 
+class Open_Tcp_Server extends Tcp_Server {
+
+    public function __construct($serverName) {
+
+        parent::__construct($serverName);
+    }
+
+    function response($request) {
+        echo 'response in child';
+        return $request;
+    }
+
+
+}
+function test() {
+    $serv = Tcp_Server::factory('Open_Tcp_Server', 'test');
+    $serv->init();
+    $serv->start();
+}
+test();
