@@ -3,6 +3,8 @@
 #include <fcntl.h>
 
 #include <event2/event.h>
+#include <event2/buffer.h>
+#include <event2/bufferevent.h>
 #include <event2/thread.h>
 
 #include <assert.h>
@@ -13,132 +15,102 @@
 #include <errno.h>
 #include <assert.h>
 
-#define threadpool 1
+#include "evthr.h"
 
-#ifdef threadpool
-#include "threadpool.h"
-#else
-#include "thpool.h"
-#endif
+evthr_pool_t *pool = NULL;
 
-#define THREAD 4
-#define QUEUE  1024
-#define MAX_LINE 16384
+typedef struct client {
+    struct bufferevent *bev;
+    pthread_mutex_t lock;
+} client_t;
 
-
-struct server;
-#ifdef threadpool
-threadpool_t *pool;
-#else
-thpool_t* threadpool;             /* make a new thread pool structure     */
-#endif
-
-void readcb(evutil_socket_t fd, short events, void *arg);
-void writecb(evutil_socket_t fd, short events, void *arg);
-struct client_t {
-    char input[MAX_LINE];
-    char output[MAX_LINE];
-    size_t in_len, out_len;
-    int fd;
-
-    struct event *read_event;
-    struct event *write_event;
-};
-
-struct client_t *client_new(struct event_base *base, evutil_socket_t fd)
+client_t *client_new(struct bufferevent *bev)
 {
-    struct client_t *client = malloc(sizeof(struct client_t));
-    if (!client)
-        return NULL;
-    client->read_event = event_new(base, fd, EV_READ|EV_PERSIST, readcb, client);
-    if (!client->read_event) {
-        free(client);
+    client_t *client = malloc(sizeof(client_t));
+    if (!client) {
         return NULL;
     }
-    client->write_event = event_new(base, fd, EV_WRITE, writecb, client);
+    client->bev = bev;
 
-    if (!client->write_event) {
-        event_free(client->read_event);
-        free(client);
+    if (pthread_mutex_init(&client->lock, NULL)) {
+        evthr_free(client);
         return NULL;
     }
-
-    client->in_len = client->out_len = 0;
-
-    assert(client->write_event);
     return client;
 }
 
-void client_free(struct client_t *client)
+void client_free(client_t *client)
 {
-    event_free(client->read_event);
-    event_free(client->write_event);
     free(client);
 }
 
 
-
-#define BUF_SIZE 8192
-void worker(void *arg)
+void worker(evthr_t * thr, void * arg, void * shared)
 {
-    struct client_t *client = (struct client_t *)arg;
-    int n, count = 0, offset = 0;
-    while (1) {
-        n = recv(client->fd, client->input + offset, BUF_SIZE, 0);
-        if (n <= 0)
-            break;
-        count += n;
-        offset += n;
+
+    client_t *client = (client_t *)arg;
+    struct evbuffer *input, *output;
+
+    pthread_mutex_lock(&client->lock);
+    bufferevent_lock(client->bev);
+    output = bufferevent_get_output(client->bev);
+    input = bufferevent_get_input(client->bev);
+    evbuffer_add_buffer(output, input);
+    bufferevent_unlock(client->bev);
+    pthread_mutex_unlock(&client->lock);
+
+    /*buf = malloc(length);
+    n = evbuffer_remove(input, buf, length);
+    if (n != length) {
+        fprintf(stderr, "Fatal error on evbuffer_remove n = %d, length = %d\n", n, length);
     }
-    if (n == 0) {
-        client_free(client);
-    } else if (n < 0) {
-        if (errno != EAGAIN) {
-            perror("recv");
-            client_free(client);
-        } else if (count > 0) {
-            client->in_len = count;
-            memcpy(client->output, client->input, count);
-            client->out_len = count;
-            event_add(client->write_event, NULL);
-        }
-    }
+    evbuffer_add(output, buf, length);
+    free(buf);
+    */
 }
 
-void readcb(evutil_socket_t fd, short events, void *arg)
+void readcb(struct bufferevent *bev, void *ctx)
 {
-    struct client_t *client = (struct client_t *)arg;
+
     int ret;
-
-#ifdef threadpool 
-    ret = threadpool_add(pool, &worker, client, 0);
-    if (ret == 0) {
-    } else  if (ret == threadpool_queue_full) {
-        fprintf(stderr, "task queue full\n");
-    } else {
-        fprintf(stderr, "thread pool error code = %d\n", ret);
-    }
-#else 
-	thpool_add_work(threadpool, &worker, client);
-#endif
-}
-void writecb(evutil_socket_t fd, short events, void *arg)
-{
-    int offset = 0, n;
-    struct client_t *client = (struct client_t *)arg;
-    while (offset < client->out_len) {
-        n = send(fd, client->input + offset, client->out_len - offset, 0);
-        if (n < 0) {
-            if (errno == EAGAIN)
-                break;
-            client_free(client);
-            perror("send");
-            return;
+    struct evbuffer *input;
+    client_t *client = (client_t *)ctx;
+    input = bufferevent_get_input(bev);
+    for (;;) {
+        ret = evthr_pool_defer(pool, worker, client);
+        if (ret == EVTHR_RES_OK) {
+            /*fprintf(stderr, "add task success\n");*/
+            break;
         }
-        offset += n;
+        if (ret == EVTHR_RES_RETRY || ret == EVTHR_RES_BACKLOG) {
+            fprintf(stderr, "retry or full = %d\n", ret);
+            usleep(1000);
+            continue;
+        }
+        fprintf(stderr, "thread pool error code = %d\n", ret);
+        break;
     }
-    if (offset == client->out_len)
-        client->out_len = 0;
+}
+
+void errorcb(struct bufferevent *bev, short error, void *ctx)
+{
+    client_t *client = (client_t *)ctx;
+    if (error & BEV_EVENT_EOF) {
+        /* connection has been closed */
+    } else if (error & BEV_EVENT_ERROR) {
+        /* check errno to see what error occurred */
+        perror("what?");
+        /*exit(1);*/
+    } else if (error & BEV_EVENT_TIMEOUT) {
+        /* must be a timeout event handle, handle it */
+    } else {
+        printf("what?");
+        exit(1);
+    }
+
+//    pthread_mutex_lock(&client->lock);
+    bufferevent_free(bev);
+//    pthread_mutex_unlock(&client->lock);
 }
 
 void do_accept(evutil_socket_t listener, short event, void *arg)
@@ -146,6 +118,8 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
     struct event_base *base = arg;
     struct sockaddr_storage ss;
     struct timeval read_timeout = {30, 0};
+    struct bufferevent *bev;
+    client_t *client;
     socklen_t slen = sizeof(ss);
 
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
@@ -154,14 +128,12 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
     } else if (fd > FD_SETSIZE) {
         close(fd);
     } else {
-        struct client_t *client;
         evutil_make_socket_nonblocking(fd);
-        client = client_new(base, fd);
-        if (client == NULL) {
-            printf(stderr, "client");
-            exit(1);
-        }
-        event_add(client->read_event, &read_timeout);
+        bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE | BEV_OPT_THREADSAFE);
+        client = client_new(bev);
+        bufferevent_setcb(bev, readcb, NULL, errorcb, client);
+        bufferevent_set_timeouts(bev, &read_timeout, NULL);
+        bufferevent_enable(bev, EV_READ|EV_WRITE);
     }
 }
 
@@ -173,6 +145,11 @@ void start(void)
     struct event *listener_event;
 
     evthread_use_pthreads();
+
+    pool = evthr_pool_new(8, NULL, NULL);
+
+    evthr_pool_start(pool);
+
 
     base = event_base_new();
     if (!base)
@@ -196,16 +173,10 @@ void start(void)
     }
 
     listener_event = event_new(base, listener, EV_READ|EV_PERSIST, do_accept, (void*)base);
+
     /*XXX check it */
     event_add(listener_event, NULL);
 
-#ifdef threadpool 
-    assert((pool = threadpool_create(THREAD, QUEUE, 0)) != NULL);
-    fprintf(stderr, "Pool started with %d threads and "
-            "queue size of %d\n", THREAD, QUEUE);
-#else
-	threadpool=thpool_init(4);        /* initialise it to 4 number of threads */
-#endif
     event_base_dispatch(base);
 }
 
