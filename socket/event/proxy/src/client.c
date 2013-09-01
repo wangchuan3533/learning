@@ -6,7 +6,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#define BUF_SIZE 8192
+#include <errno.h>
+#define BUF_SIZE 16384
 int main()
 {
     int fd, ret, n, i;
@@ -16,7 +17,7 @@ int main()
 
     server = gethostbyname("127.0.0.1");
     if (server == NULL) {
-        fprintf(stderr, "ERROR: no such host\n");
+        perror("gethostbyname\n");
         exit(1);
     }
 
@@ -28,16 +29,17 @@ int main()
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        fprintf(stderr, "ERROR: socket create failure\n");
+        perror("socket\n");
         exit(1);
     }
 
     ret = connect(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
     if (ret < 0) {
-        fprintf(stderr, "ERROR connect\n");
+        perror("connect");
         exit(1);
     }
 
+    int len = BUF_SIZE;
     for (i = 0; i < 1; i++) {
         memset(send_buf, i % 256, sizeof(send_buf));
         n = send(fd, send_buf, sizeof(send_buf), 0);
@@ -60,8 +62,5 @@ int main()
         }
     }
     
-    close(fd);
-    
     exit(0);
-
 }
