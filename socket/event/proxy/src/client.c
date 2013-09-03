@@ -8,9 +8,10 @@
 #include <stdio.h>
 #include <errno.h>
 #define BUF_SIZE 16384
+#define COUNT 100
 int main()
 {
-    int fd, ret, n, i;
+    int fd[COUNT], ret, n, i;
     struct sockaddr_in serv_addr;
     struct hostent *server;
     char send_buf[BUF_SIZE], recv_buf[BUF_SIZE];
@@ -27,40 +28,40 @@ int main()
     serv_addr.sin_port = htons(9501);
     memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
 
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        perror("socket\n");
-        exit(1);
-    }
+    for (i = 0; i < COUNT; i++) {
 
-    ret = connect(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
-    if (ret < 0) {
-        perror("connect");
-        exit(1);
-    }
-
-    int len = BUF_SIZE;
-    for (i = 0; i < 1; i++) {
-        memset(send_buf, i % 256, sizeof(send_buf));
-        n = send(fd, send_buf, sizeof(send_buf), 0);
-        if (n != sizeof(send_buf)) {
-            fprintf(stderr, "n = %d\n", n);
-            fprintf(stderr, "ERROR send\n");
-//            exit(1);
+        fd[i] = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd[i] < 0) {
+            perror("socket\n");
+            exit(1);
         }
-        n = recv(fd, recv_buf, sizeof(recv_buf), 0);
+
+        ret = connect(fd[i], (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+        if (ret < 0) {
+            perror("connect");
+            exit(1);
+        }
+    }
+
+    for (i = 0; i < COUNT; i++) {
+        memset(send_buf, i % 256, sizeof(send_buf));
+        n = send(fd[i], send_buf, sizeof(send_buf), 0);
+        if (n != sizeof(send_buf)) {
+            fprintf(stderr, "ERROR send\n");
+            exit(1);
+        }
+        n = recv(fd[i], recv_buf, sizeof(recv_buf), 0);
         if (n != sizeof(recv_buf)) {
-            fprintf(stderr, "n = %d\n", n);
             fprintf(stderr, "ERROR recv\n");
- //           exit(1);
         }
         if (strncmp(send_buf, recv_buf, sizeof(send_buf))) {
             fprintf(stderr, "mismatch\n");
-  //          exit(1);
         } else {
             printf("yes");
         }
     }
-    
+    for (i = 0; i < COUNT; i++) {
+        close(fd[i]);
+    }
     exit(0);
 }
