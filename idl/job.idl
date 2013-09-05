@@ -1,0 +1,5 @@
+interface JobManager {
+    readonly attribute string FirstName;
+    attribute string status;
+    string QueryJobStatus(in long number, out string property);
+};
