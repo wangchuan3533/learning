@@ -33,7 +33,7 @@ typedef struct evthr_cmd        evthr_cmd_t;
 typedef struct evthr_pool_slist evthr_pool_slist_t;
 
 struct evthr_cmd {
-    uint8_t  stop : 1;
+    uint8_t  stop;
     void   * args;
     evthr_cb cb;
 } __attribute__ ((packed));
