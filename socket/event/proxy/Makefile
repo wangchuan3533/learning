@@ -1,9 +1,9 @@
-CFLAGS = -g -D_REENTRANT -Wall -pedantic -Ievthr/
-LDFLAGS = -levent -levent_pthreads
-#LDFLAGS = -levent 
+CFLAGS = -g -D_REENTRANT -Wall -pedantic -Ievthr/ -Isrc/ -DDEBUG
+LDFLAGS = -L/usr/local/lib -levent -levent_pthreads -lcurl
 CC = gcc
 
 TARGETS = server client
+OBJS = src/server.o src/client.o evthr/evthr.o
 
 all: $(TARGETS)
 
@@ -17,3 +17,4 @@ evthr/evthr.o : evthr/evthr.c
 
 clean:
 	$(RM) $(TARGETS)
+	$(RM) $(OBJS)

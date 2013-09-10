@@ -61,7 +61,7 @@ static struct {
 } global = {
     54574,
     54575,
-    "http://127.0.0.1/",
+    "http://open.life.qq.com/customerlive.php",
     NULL,
     NULL
 };
@@ -79,9 +79,8 @@ void task_free();
 
 conn_t *conn_new()
 {
-    conn_t *conn = malloc(sizeof(conn_t));
+    conn_t *conn = calloc(1, sizeof(conn_t));
     assert(conn != NULL);
-    memset(conn, 0, sizeof(conn));
 
     conn->buffer = evbuffer_new();
     assert(conn->buffer);
@@ -97,9 +96,8 @@ void conn_free(conn_t *conn)
 
 client_t *client_new()
 {
-    client_t *client = malloc(sizeof(client_t));
+    client_t *client = calloc(1, sizeof(client_t));
     assert(client != NULL);
-    memset(client, 0, sizeof(client_t));
 
     if (pthread_rwlock_init(&client->lock, NULL)) {
         free(client);
@@ -142,9 +140,8 @@ void client_dec_ref(client_t * client)
 
 task_t *task_new()
 {
-    task_t *task = malloc(sizeof(task_t));
+    task_t *task = calloc(1, sizeof(task_t));
     assert(task != NULL);
-    memset(task, 0, sizeof(task_t));
 
     task->input = evbuffer_new();
     assert(task->input != NULL);
@@ -179,7 +176,7 @@ void worker(evthr_t *thr, void *arg, void *shared)
     task_t *task = (task_t *)arg;
     client_t *tmp, *client = (client_t *)task->data;
 
-    assert(client->refcnt > 0);
+    assert(client->refcnt >= 0);
     length = evbuffer_get_length(task->input);
     assert (length > 2 * sizeof(uint32_t));
     ret = evbuffer_remove(task->input, &type, sizeof(type));
@@ -192,9 +189,12 @@ void worker(evthr_t *thr, void *arg, void *shared)
         index = index ^ length ^ type;
     }
 
+    pthread_rwlock_rdlock(&client->lock);
     if (client->conn == NULL) {
+        pthread_rwlock_unlock(&client->lock);
         goto closed;
     }
+    pthread_rwlock_unlock(&client->lock);
 
     output = evbuffer_new();
     assert(output != NULL);
@@ -208,17 +208,15 @@ void worker(evthr_t *thr, void *arg, void *shared)
             assert(ret == 32);
 
             /* if not in id_hash, store it into id_hash */
-            pthread_rwlock_rdlock(&global.id_hash_lock);
+            pthread_rwlock_wrlock(&global.id_hash_lock);
             HASH_FIND(hh, global.id_hash, client->id, 32, tmp);
-            pthread_rwlock_unlock(&global.id_hash_lock);
             if (tmp == NULL) {
-                pthread_rwlock_wrlock(&global.id_hash_lock);
                 HASH_ADD(hh, global.id_hash, id, 32, client);
-                pthread_rwlock_unlock(&global.id_hash_lock);
             }
+            pthread_rwlock_unlock(&global.id_hash_lock);
 
             /* store the pull_cmd */
-            client->pull_cmd = malloc(1024);
+            client->pull_cmd = calloc(1, 1024);
             assert(client->pull_cmd != NULL);
             ret = evbuffer_remove(task->input, client->pull_cmd, 1024);
             if (ret < 0) {
@@ -242,6 +240,9 @@ void worker(evthr_t *thr, void *arg, void *shared)
             evbuffer_add_printf(output, "http error");
             break;
         }
+        /*
+        evbuffer_add_printf(output, "helloadfadfasdfasdfsadfadfasdfasdfsadfasdfasdfewifkh iohasdnfasfhsoadfhsdfksafadifioasdfnsafi");
+        */
         type = TYPE_PUSH;
         break;
     case TYPE_POST:
@@ -249,7 +250,7 @@ void worker(evthr_t *thr, void *arg, void *shared)
         assert(ret == 0);
 
         post_cmd_len = evbuffer_get_length(task->input);
-        post_cmd = malloc(post_cmd_len);
+        post_cmd = calloc(1, post_cmd_len);
         assert(post_cmd != NULL);
 
         ret = evbuffer_remove(task->input, post_cmd, post_cmd_len);
@@ -435,7 +436,10 @@ closed:
     /* delete from hash */
     hash_del(client);
     /* client closed */
+
+    pthread_rwlock_wrlock(&client->lock);
     client->conn = NULL;
+    pthread_rwlock_unlock(&client->lock);
     client_dec_ref(client);
 
     /* free conn */
@@ -506,10 +510,9 @@ void client_accept(evutil_socket_t listener, short event, void *arg)
 {
     struct event_base *base = arg;
     struct sockaddr_storage ss;
-    struct timeval read_timeout = {15, 0};
+    struct timeval read_timeout = {300, 0};
     client_t *client;
     socklen_t slen = sizeof(ss);
-
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     if (fd < 0) {
         perror("accept");

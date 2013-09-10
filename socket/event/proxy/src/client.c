@@ -10,7 +10,7 @@
 #include <time.h>
 #include <errno.h>
 #define BUF_SIZE 1024*64
-#define COUNT 10
+#define COUNT 1
 #include "server.h"
 int main()
 {
@@ -85,8 +85,8 @@ int main()
             }
             printf("length=%d type=%d index=%d\n", recv_head->length, recv_head->type, recv_head->index);
             printf("Received: %s\n", recv_buf + sizeof(package_head_t));
+            usleep(random() % 100000);
         }
-        usleep(random() % 100000);
     }
     for (i = 0; i < COUNT; i++) {
         close(fd[i]);
