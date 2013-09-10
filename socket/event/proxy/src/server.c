@@ -354,7 +354,7 @@ void rpc_push(evthr_t *thr, void *arg, void *shared)
                 /* TODO */
                 client_dec_ref(tmp);
                 fprintf(stderr, "thread pool error code = %d\n", ret);
-                exit(1);
+                FATAL_ERROR;
             }
         }
     }
@@ -429,8 +429,8 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
 closed:
 
     /* close */
-    close(fd);
     event_del(conn->event);
+    close(fd);
 
     /* delete from hash */
     hash_del(client);
@@ -476,6 +476,7 @@ void rpc_readcb(evutil_socket_t fd, short events, void *arg)
             ret = evthr_pool_defer(global.pool, rpc_push, task);
             if (ret != EVTHR_RES_OK) {
                 fprintf(stderr, "thread pool: %d\n", ret);
+                FATAL_ERROR;
             }
             conn->cur_len = 0;
             conn->cur_recv = 0;
