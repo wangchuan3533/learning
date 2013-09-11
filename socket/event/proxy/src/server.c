@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <assert.h>
+#include <time.h>
 
 /* libevent */
 #include <event2/event.h>
@@ -20,10 +21,11 @@
 #include "evthr.h"
 #include "server.h"
 
-#define FATAL_ERROR do {\
-    fprintf(stderr, "FATAL at %d\n", __LINE__);\
+#define fatal_error do {\
+    fprintf(stderr, "fatal errorat %d\n", __LINE__);\
     exit(1);\
 } while(0)
+
 
 typedef struct conn {
     int fd;
@@ -42,6 +44,8 @@ typedef struct client {
     int refcnt;
     pthread_rwlock_t lock;
 
+    evthr_t *thr;
+
     UT_hash_handle hh;
 } client_t;
 
@@ -55,13 +59,15 @@ static struct {
     int port_client;
     int port_rpc;
     const char *url;
+    const char *logfile;
     evthr_pool_t *pool;
     client_t *id_hash;
     pthread_rwlock_t id_hash_lock;
 } global = {
     54574,
     54575,
-    "http://open.life.qq.com/customerlive.php",
+    "http://open.life-v20130911_customer_tcp.qq.com/customerlive.php",
+    "./customerlive.tcp.log",
     NULL,
     NULL
 };
@@ -221,10 +227,10 @@ void worker(evthr_t *thr, void *arg, void *shared)
             ret = evbuffer_remove(task->input, client->pull_cmd, 1024);
             if (ret < 0) {
                 /* error */
-                FATAL_ERROR;
+                fatal_error;
             } else if (ret == 1024) {
                 /* error */
-                FATAL_ERROR;
+                fatal_error;
             }
             client->pull_cmd_len = ret;
         } else {
@@ -286,6 +292,7 @@ void worker(evthr_t *thr, void *arg, void *shared)
     /* send output */
     pthread_rwlock_rdlock(&client->lock);
     if (client->conn == NULL) {
+        pthread_rwlock_unlock(&client->lock);
         goto closed;
     } else {
         fd = client->conn->fd;
@@ -350,13 +357,18 @@ void rpc_push(evthr_t *thr, void *arg, void *shared)
 
             /* add task to pool */
             client_inc_ref(tmp);
-            ret = evthr_pool_defer(global.pool, rpc_push, rpc);
+            if (!tmp->thr) {
+                tmp->thr = evthr_pool_find_min(global.pool);
+                assert(tmp->thr != NULL);
+            }
+            ret = evthr_defer(tmp->thr, worker, rpc);
             if (ret != EVTHR_RES_OK) {
                 /* TODO */
                 client_dec_ref(tmp);
                 fprintf(stderr, "thread pool error code = %d\n", ret);
-                FATAL_ERROR;
+                fatal_error;
             }
+            printf("rpc push %s\n", id);
         }
     }
 
@@ -403,7 +415,12 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
 
             client_inc_ref(client);
             /* add task to pool */
-            ret = evthr_pool_defer(global.pool, worker, task);
+            if (!client->thr) {
+                client->thr = evthr_pool_find_min(global.pool);
+                assert(client->thr != NULL);
+            }
+
+            ret = evthr_defer(client->thr, worker, task);
             if (ret != EVTHR_RES_OK) {
                 fprintf(stderr, "thread pool: %d\n", ret);
                 client_dec_ref(client);
@@ -480,7 +497,7 @@ void rpc_readcb(evutil_socket_t fd, short events, void *arg)
             ret = evthr_pool_defer(global.pool, rpc_push, task);
             if (ret != EVTHR_RES_OK) {
                 fprintf(stderr, "thread pool: %d\n", ret);
-                FATAL_ERROR;
+                fatal_error;
             }
             conn->cur_len = 0;
             conn->cur_recv = 0;
@@ -516,7 +533,7 @@ void client_accept(evutil_socket_t listener, short event, void *arg)
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     if (fd < 0) {
         perror("accept");
-        FATAL_ERROR;
+        fatal_error;
     } else {
         evutil_make_socket_nonblocking(fd);
         client = client_new();
@@ -541,7 +558,7 @@ void rpc_accept(evutil_socket_t listener, short event, void *arg)
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     if (fd < 0) {
         perror("accept");
-        FATAL_ERROR;
+        fatal_error;
     } else {
         evutil_make_socket_nonblocking(fd);
         conn = conn_new();
@@ -661,11 +678,21 @@ int http_post(const char *url, const char *content, int len, struct evbuffer *ou
 
 int main(int c, char **v)
 {
-    setvbuf(stdout, NULL, _IONBF, 0);
-    if (sysconf(_SC_OPEN_MAX) < 1000) {
+    int fd;
+    daemon(0, 0);
+
+    /* log file */
+    fd = open(global.logfile, O_WRONLY | O_APPEDN);
+    if (!fd) {
+        exit(1);
+    }
+
+    /*
+    if (sysconf(_SC_OPEN_MAX) < 10000) {
         fprintf(stderr, "open max is %ld\n", sysconf(_SC_OPEN_MAX));
         exit(0);
     }
+    */
     start();
     return 0;
 }
