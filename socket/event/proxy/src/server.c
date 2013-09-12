@@ -1,5 +1,8 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <getopt.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <unistd.h>
@@ -25,6 +28,8 @@
     fprintf(stderr, "fatal errorat %d\n", __LINE__);\
     exit(1);\
 } while(0)
+
+#define trace(fmt, args...) fprintf(global.fp_log, fmt, ##args)
 
 
 typedef struct conn {
@@ -56,18 +61,22 @@ typedef struct task {
 
 /* global variables */
 static struct {
-    int port_client;
-    int port_rpc;
+    int client_port;
+    int rpc_port;
+    int thread_num;
+    int daemon_mode;
     const char *url;
-    const char *logfile;
     evthr_pool_t *pool;
     client_t *id_hash;
+    FILE *fp_log;
     pthread_rwlock_t id_hash_lock;
 } global = {
     54574,
     54575,
+    16,
+    0,
     "http://open.life-v20130911_customer_tcp.qq.com/customerlive.php",
-    "./customerlive.tcp.log",
+    NULL,
     NULL,
     NULL
 };
@@ -110,7 +119,7 @@ client_t *client_new()
         return NULL;
     }
 
-    printf("new client 0x%lx\n", (unsigned long)client);
+    trace("new client 0x%lx\n", (unsigned long)client);
     return client;
 }
 
@@ -120,7 +129,7 @@ void client_free(client_t *client)
         free(client->pull_cmd);
     }
 
-    printf("free client 0x%lx\n", (unsigned long)client);
+    trace("free client 0x%lx\n", (unsigned long)client);
     free(client);
 }
 
@@ -368,7 +377,7 @@ void rpc_push(evthr_t *thr, void *arg, void *shared)
                 fprintf(stderr, "thread pool error code = %d\n", ret);
                 fatal_error;
             }
-            printf("rpc push %s\n", id);
+            trace("rpc push %s\n", id);
         }
     }
 
@@ -610,22 +619,22 @@ void start(void)
     base = event_base_new();
     assert(base != NULL);
 
-    /* listern on port_client */
-    listener = listen_on(global.port_client);
+    /* listern on client_port */
+    listener = listen_on(global.client_port);
     assert(listener > 0);
     listener_event = event_new(base, listener, EV_READ|EV_PERSIST, client_accept, (void*)base);
     assert(listener_event != NULL);
     event_add(listener_event, NULL);
 
-    /* listern on port_rpc */
-    listener = listen_on(global.port_rpc);
+    /* listern on rpc_port */
+    listener = listen_on(global.rpc_port);
     assert(listener > 0);
     listener_event = event_new(base, listener, EV_READ|EV_PERSIST, rpc_accept, (void*)base);
     assert(listener_event != NULL);
     event_add(listener_event, NULL);
 
     /* thread pool */
-    global.pool = evthr_pool_new(32, NULL, NULL);
+    global.pool = evthr_pool_new(global.thread_num, NULL, NULL);
     evthr_pool_set_backlog(global.pool, 128);
 
     evthr_pool_start(global.pool);
@@ -676,15 +685,76 @@ int http_post(const char *url, const char *content, int len, struct evbuffer *ou
     return 0;
 }
 
-int main(int c, char **v)
+int main(int argc, char **argv)
 {
-    int fd;
-    daemon(0, 0);
+    FILE *fp;
+    int opt, fd;
+    const char *pid_file = NULL, *log_file = NULL, *opts_short = "c:r:l:p:t:d";
+    struct option opts_long[] = {
+        {"client-port", 1, NULL, 'c'},
+        {"rpc-port", 1, NULL, 'r'},
+        {"log-file", 1, NULL, 'l'},
+        {"pid-file", 1, NULL, 'p'},
+        {"thread-number", 1, NULL, 't'},
+        {"daemon-mode", 0, NULL, 'd'},
+        {0, 0, 0, 0}};
 
-    /* log file */
-    fd = open(global.logfile, O_WRONLY | O_APPEDN);
-    if (!fd) {
-        exit(1);
+    while ((opt = getopt_long(argc, argv, opts_short, opts_long, NULL)) != -1) {
+        switch (opt) {
+        case 'c':
+            global.client_port = atoi(optarg);
+            break;
+        case 'r':
+            global.rpc_port = atoi(optarg);
+            break;
+        case 'l':
+            log_file = optarg;
+            break;
+        case 'p':
+            pid_file = optarg;
+            break;
+        case 't':
+            global.thread_num = atoi(optarg);
+            break;
+        case 'd':
+            global.daemon_mode = 1;
+            break;
+        default:
+            printf("unkown option\n");
+            break;
+        }
+    }
+
+    /* run as daemon */
+    if (global.daemon_mode) {
+        /* redirect the std* file later */
+        daemon(0, 1);
+    }
+
+    if (log_file) {
+        global.fp_log = fopen(log_file, "a+");
+        if (global.fp_log == NULL) {
+            fprintf(stderr, "fopen");
+            exit(1);
+        }
+    }
+
+    if (pid_file) {
+        fp = fopen(pid_file, "w");
+        if (fp == NULL) {
+            fprintf(stderr, "fopen: %s", pid_file);
+            exit(1);
+        }
+        fprintf(fp, "%d", getpid());
+        fclose(fp);
+    }
+
+    if (global.daemon_mode) {
+        fd = open("/dev/null", O_RDWR);
+        dup2(fd, STDIN_FILENO);
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        close(fd);
     }
 
     /*
