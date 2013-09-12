@@ -24,12 +24,13 @@
 #include "evthr.h"
 #include "server.h"
 
-#define fatal_error do {\
+#define ERROR_EXIT do {\
     fprintf(stderr, "fatal errorat %d\n", __LINE__);\
     exit(1);\
 } while(0)
 
-#define trace(fmt, args...) fprintf(global.fp_log, fmt, ##args)
+#define TRACE(fmt, args...) fprintf(global.fp_log, fmt, ##args)
+#define TRACE_ERROR(fmt, args...) fprintf(global.fp_log, "ERROR at line %d" fmt, __LINE__, ##args)
 
 
 typedef struct conn {
@@ -119,7 +120,7 @@ client_t *client_new()
         return NULL;
     }
 
-    trace("new client 0x%lx\n", (unsigned long)client);
+    TRACE("new client 0x%lx\n", (unsigned long)client);
     return client;
 }
 
@@ -129,7 +130,7 @@ void client_free(client_t *client)
         free(client->pull_cmd);
     }
 
-    trace("free client 0x%lx\n", (unsigned long)client);
+    TRACE("free client 0x%lx\n", (unsigned long)client);
     free(client);
 }
 
@@ -236,10 +237,16 @@ void worker(evthr_t *thr, void *arg, void *shared)
             ret = evbuffer_remove(task->input, client->pull_cmd, 1024);
             if (ret < 0) {
                 /* error */
-                fatal_error;
+                type = TYPE_ERROR;
+                evbuffer_add_printf(output, "Internal error");
+                /*ERROR_EXIT;*/
+                TRACE_ERROR("evbuffer_remove failue in client 0x%lx\n", (unsigned long)client);
             } else if (ret == 1024) {
                 /* error */
-                fatal_error;
+                type = TYPE_ERROR;
+                evbuffer_add_printf(output, "Request too long for pull message");
+                /*ERROR_EXIT;*/
+                TRACE_ERROR("request too long for pull message in client 0x%lx\n", (unsigned long)client);
             }
             client->pull_cmd_len = ret;
         } else {
@@ -374,10 +381,11 @@ void rpc_push(evthr_t *thr, void *arg, void *shared)
             if (ret != EVTHR_RES_OK) {
                 /* TODO */
                 client_dec_ref(tmp);
-                fprintf(stderr, "thread pool error code = %d\n", ret);
-                fatal_error;
+                TRACE("thread pool error code = %d\n", ret);
+                /*ERROR_EXIT;*/
+                TRACE_ERROR("thread defer failed with thr: 0x%lx\n", (unsigned long)tmp->thr);
             }
-            trace("rpc push %s\n", id);
+            TRACE("rpc push %s\n", id);
         }
     }
 
@@ -394,7 +402,7 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
     assert(conn != NULL);
     /* timeout close client */
     if (events & EV_TIMEOUT) {
-        fprintf(stderr, "timeout\n");
+        TRACE("client 0x%lx timeout\n", (unsigned long)client);
         goto closed;
     }
     while (1) {
@@ -431,7 +439,7 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
 
             ret = evthr_defer(client->thr, worker, task);
             if (ret != EVTHR_RES_OK) {
-                fprintf(stderr, "thread pool: %d\n", ret);
+                TRACE_ERROR("thread defer failed with errcode: %d\n", ret);
                 client_dec_ref(client);
                 goto closed;
             }
@@ -505,8 +513,8 @@ void rpc_readcb(evutil_socket_t fd, short events, void *arg)
             /* add task to pool */
             ret = evthr_pool_defer(global.pool, rpc_push, task);
             if (ret != EVTHR_RES_OK) {
-                fprintf(stderr, "thread pool: %d\n", ret);
-                fatal_error;
+                /*ERROR_EXIT;*/
+                TRACE_ERROR("thread pool defer failed with errcode %d\n", ret);
             }
             conn->cur_len = 0;
             conn->cur_recv = 0;
@@ -542,7 +550,8 @@ void client_accept(evutil_socket_t listener, short event, void *arg)
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     if (fd < 0) {
         perror("accept");
-        fatal_error;
+        /*ERROR_EXIT;*/
+        TRACE_ERROR("accept failed in client_accpet\n");
     } else {
         evutil_make_socket_nonblocking(fd);
         client = client_new();
@@ -567,7 +576,8 @@ void rpc_accept(evutil_socket_t listener, short event, void *arg)
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     if (fd < 0) {
         perror("accept");
-        fatal_error;
+        /*ERROR_EXIT;*/
+        TRACE_ERROR("accept failed in client_accpet\n");
     } else {
         evutil_make_socket_nonblocking(fd);
         conn = conn_new();
@@ -661,8 +671,8 @@ int http_post(const char *url, const char *content, int len, struct evbuffer *ou
 
     curl = curl_easy_init();
     if (!curl) {
-        fprintf(stderr, "could not init curl ");
-        exit(1);
+        TRACE_ERROR("could not init curl\n");
+        return -1;
     }
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_cb);
@@ -677,8 +687,7 @@ int http_post(const char *url, const char *content, int len, struct evbuffer *ou
 
 
     if (ret != CURLE_OK) {
-       fprintf(stderr, "curl_easy_perform failed: %s\n",
-       curl_easy_strerror(ret));
+       TRACE_ERROR("curl_easy_perform failed: %s\n", curl_easy_strerror(ret));
        return -1;
     }
     curl_easy_cleanup(curl);
@@ -735,7 +744,7 @@ int main(int argc, char **argv)
         global.fp_log = fopen(log_file, "a+");
         if (global.fp_log == NULL) {
             fprintf(stderr, "fopen");
-            exit(1);
+            ERROR_EXIT;
         }
     }
 
@@ -743,7 +752,7 @@ int main(int argc, char **argv)
         fp = fopen(pid_file, "w");
         if (fp == NULL) {
             fprintf(stderr, "fopen: %s", pid_file);
-            exit(1);
+            ERROR_EXIT;
         }
         fprintf(fp, "%d", getpid());
         fclose(fp);
