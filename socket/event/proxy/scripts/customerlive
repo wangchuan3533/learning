@@ -8,14 +8,16 @@ fi
 export LD_LIBRARY_PATH=$PREFIX/lib
 case $1 in
 start)
-    customerlive_tcp_server -c54574 -r54575 -l$PREFIX/var/log/customerlive.tcp.log -p$PREFIX/var/tmp/customerlive.tcp.pid -t20 -d
+    customerlive_tcp_server -u"http://open.life-v20130911_customer_tcp.qq.com/customerlive.php" \
+    -c54574 -r54575 -l$PREFIX/var/log/customerlive.tcp.log -p$PREFIX/var/tmp/customerlive.tcp.pid -t20 -d
     ;;
 stop)
     cat $PREFIX/var/tmp/customerlive.tcp.pid |xargs kill
     ;;
 restart)
     cat $PREFIX/var/tmp/customerlive.tcp.pid |xargs kill
-    customerlive_tcp_server -c54574 -r54575 -l$PREFIX/var/log/customerlive.tcp.log -p$PREFIX/var/tmp/customerlive.tcp.pid -t20 -d
+    customerlive_tcp_server -u"http://open.life-v20130911_customer_tcp.qq.com/customerlive.php" \
+    -c54574 -r54575 -l$PREFIX/var/log/customerlive.tcp.log -p$PREFIX/var/tmp/customerlive.tcp.pid -t20 -d
     ;;
 *)
     echo "Usage"
