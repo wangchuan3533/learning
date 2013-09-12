@@ -76,7 +76,7 @@ static struct {
     54575,
     16,
     0,
-    "http://open.life-v20130911_customer_tcp.qq.com/customerlive.php",
+    NULL,
     NULL,
     NULL,
     NULL
@@ -698,13 +698,14 @@ int main(int argc, char **argv)
 {
     FILE *fp;
     int opt, fd;
-    const char *pid_file = NULL, *log_file = NULL, *opts_short = "c:r:l:p:t:d";
+    const char *pid_file = NULL, *log_file = NULL, *opts_short = "c:r:l:p:t:u:d";
     struct option opts_long[] = {
         {"client-port", 1, NULL, 'c'},
         {"rpc-port", 1, NULL, 'r'},
         {"log-file", 1, NULL, 'l'},
         {"pid-file", 1, NULL, 'p'},
         {"thread-number", 1, NULL, 't'},
+        {"url-open", 1, NULL, 'u'},
         {"daemon-mode", 0, NULL, 'd'},
         {0, 0, 0, 0}};
 
@@ -724,6 +725,9 @@ int main(int argc, char **argv)
             break;
         case 't':
             global.thread_num = atoi(optarg);
+            break;
+        case 'u':
+            global.url = optarg;
             break;
         case 'd':
             global.daemon_mode = 1;

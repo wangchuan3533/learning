@@ -83,7 +83,8 @@ evthr_dec_backlog(evthr_t * evthr) {
 
 inline int
 evthr_get_backlog(evthr_t * evthr) {
-    return __sync_add_and_fetch(&evthr->cur_backlog, 0);
+/*    return __sync_add_and_fetch(&evthr->cur_backlog, 0);*/
+    return evthr->cur_backlog;
 }
 
 inline void
