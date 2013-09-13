@@ -415,7 +415,9 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
                     break;
                 goto closed;
             } else {
-                assert(ret == sizeof(length));
+                /*assert(ret == sizeof(length));*/
+                if (ret != sizeof(length))
+                    goto closed;
                 conn->cur_len = length;
                 conn->cur_recv = 0;
                 continue;
