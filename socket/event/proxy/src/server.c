@@ -316,7 +316,7 @@ void worker(evthr_t *thr, void *arg, void *shared)
     pthread_rwlock_unlock(&client->lock);
 
     while (1) {
-        if (evbuffer_get_length == 0)
+        if (evbuffer_get_length(output) == 0)
             break;
         ret = evbuffer_write(output, fd);
         if (ret > 0) {
