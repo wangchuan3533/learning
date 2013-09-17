@@ -53,6 +53,7 @@ evthr_pool_t * evthr_pool_new(int nthreads, evthr_init_cb init_cb, void * shared
 int            evthr_pool_start(evthr_pool_t * pool);
 evthr_res      evthr_pool_stop(evthr_pool_t * pool);
 evthr_res      evthr_pool_defer(evthr_pool_t * pool, evthr_cb cb, void * arg);
+evthr_t      * evthr_pool_find_min(evthr_pool_t * pool);
 void           evthr_pool_free(evthr_pool_t * pool);
 void           evthr_pool_set_max_backlog(evthr_pool_t * evthr, int max);
 int            evthr_pool_set_backlog(evthr_pool_t *, int);

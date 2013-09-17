@@ -83,7 +83,8 @@ evthr_dec_backlog(evthr_t * evthr) {
 
 inline int
 evthr_get_backlog(evthr_t * evthr) {
-    return __sync_add_and_fetch(&evthr->cur_backlog, 0);
+/*    return __sync_add_and_fetch(&evthr->cur_backlog, 0);*/
+    return evthr->cur_backlog;
 }
 
 inline void
@@ -433,6 +434,42 @@ evthr_pool_defer(evthr_pool_t * pool, evthr_cb cb, void * arg) {
 
     return evthr_defer(min_thr, cb, arg);
 } /* evthr_pool_defer */
+
+evthr_t *
+evthr_pool_find_min(evthr_pool_t * pool) {
+    evthr_t * min_thr = NULL;
+    evthr_t * thr     = NULL;
+
+    if (pool == NULL) {
+        return NULL;
+    }
+
+    /* find the thread with the smallest backlog */
+    TAILQ_FOREACH(thr, &pool->threads, next) {
+        int thr_backlog = 0;
+        int min_backlog = 0;
+
+        thr_backlog = evthr_get_backlog(thr);
+
+        if (min_thr) {
+            min_backlog = evthr_get_backlog(min_thr);
+        }
+
+        if (min_thr == NULL) {
+            min_thr = thr;
+        } else if (thr_backlog == 0) {
+            min_thr = thr;
+        } else if (thr_backlog < min_backlog) {
+            min_thr = thr;
+        }
+
+        if (evthr_get_backlog(min_thr) == 0) {
+            break;
+        }
+    }
+
+    return min_thr;
+}
 
 evthr_pool_t *
 evthr_pool_new(int nthreads, evthr_init_cb init_cb, void * shared) {

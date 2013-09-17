@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+
+[ -f customerlive_env ] && . customerlive_env
+
+if [ "${PREFIX}_str" == "_str" ]; then
+    echo "请先设置PREFIX环境变量"
+    exit
+fi
+
+export LD_LIBRARY_PATH=$PREFIX/lib
+
+server=$PREFIX/bin/customerlive_tcp_server
+servername=$(basename $server)
+client_port=54574
+rpc_port=54575
+log_file="$PREFIX/var/log/customerlive.tcp.log"
+pid_file="$PREFIX/var/tmp/customerlive.tcp.pid"
+thread_num=16
+url="http://open.life.qq.com/customerlive.php" 
+
+
+start()
+{
+    [ -x $server ] || exit 1
+    echo "Starting $servername :"
+    $server -c$client_port -r$rpc_port -l$log_file -p$pid_file -t$thread_num -u$url -d
+    sleep 1
+    [ -f $pid_file ] && echo "$servername started"
+}
+
+stop()
+{
+    echo "Stoping $servername: "
+    cat $pid_file | xargs kill
+    rm -f $pid_file
+}
+
+case $1 in
+start)
+    start
+    ;;
+stop)
+    stop
+    ;;
+restart)
+    stop
+    start
+    ;;
+*)
+    echo "Usage"
+    echo "$0 [start|stop|restart]"
+    ;;
+esac

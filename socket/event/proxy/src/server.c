@@ -1,5 +1,8 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <getopt.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <unistd.h>
@@ -8,6 +11,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <assert.h>
+#include <time.h>
 
 /* libevent */
 #include <event2/event.h>
@@ -20,10 +24,14 @@
 #include "evthr.h"
 #include "server.h"
 
-#define FATAL_ERROR do {\
-    fprintf(stderr, "FATAL at %d\n", __LINE__);\
+#define ERROR_EXIT do {\
+    fprintf(stderr, "fatal errorat %d\n", __LINE__);\
     exit(1);\
 } while(0)
+
+#define TRACE(fmt, args...) fprintf(global.fp_log, fmt, ##args)
+#define TRACE_ERROR(fmt, args...) fprintf(global.fp_log, "ERROR at line %d" fmt, __LINE__, ##args)
+
 
 typedef struct conn {
     int fd;
@@ -42,6 +50,8 @@ typedef struct client {
     int refcnt;
     pthread_rwlock_t lock;
 
+    evthr_t *thr;
+
     UT_hash_handle hh;
 } client_t;
 
@@ -52,16 +62,22 @@ typedef struct task {
 
 /* global variables */
 static struct {
-    int port_client;
-    int port_rpc;
+    int client_port;
+    int rpc_port;
+    int thread_num;
+    int daemon_mode;
     const char *url;
     evthr_pool_t *pool;
     client_t *id_hash;
+    FILE *fp_log;
     pthread_rwlock_t id_hash_lock;
 } global = {
     54574,
     54575,
-    "http://127.0.0.1/",
+    16,
+    0,
+    NULL,
+    NULL,
     NULL,
     NULL
 };
@@ -79,9 +95,8 @@ void task_free();
 
 conn_t *conn_new()
 {
-    conn_t *conn = malloc(sizeof(conn_t));
+    conn_t *conn = calloc(1, sizeof(conn_t));
     assert(conn != NULL);
-    memset(conn, 0, sizeof(conn));
 
     conn->buffer = evbuffer_new();
     assert(conn->buffer);
@@ -97,16 +112,15 @@ void conn_free(conn_t *conn)
 
 client_t *client_new()
 {
-    client_t *client = malloc(sizeof(client_t));
+    client_t *client = calloc(1, sizeof(client_t));
     assert(client != NULL);
-    memset(client, 0, sizeof(client_t));
 
     if (pthread_rwlock_init(&client->lock, NULL)) {
         free(client);
         return NULL;
     }
 
-    printf("new client 0x%lx\n", (unsigned long)client);
+    TRACE("new client 0x%lx\n", (unsigned long)client);
     return client;
 }
 
@@ -116,7 +130,7 @@ void client_free(client_t *client)
         free(client->pull_cmd);
     }
 
-    printf("free client 0x%lx\n", (unsigned long)client);
+    TRACE("free client 0x%lx\n", (unsigned long)client);
     free(client);
 }
 
@@ -142,9 +156,8 @@ void client_dec_ref(client_t * client)
 
 task_t *task_new()
 {
-    task_t *task = malloc(sizeof(task_t));
+    task_t *task = calloc(1, sizeof(task_t));
     assert(task != NULL);
-    memset(task, 0, sizeof(task_t));
 
     task->input = evbuffer_new();
     assert(task->input != NULL);
@@ -179,7 +192,7 @@ void worker(evthr_t *thr, void *arg, void *shared)
     task_t *task = (task_t *)arg;
     client_t *tmp, *client = (client_t *)task->data;
 
-    assert(client->refcnt > 0);
+    assert(client->refcnt >= 0);
     length = evbuffer_get_length(task->input);
     assert (length > 2 * sizeof(uint32_t));
     ret = evbuffer_remove(task->input, &type, sizeof(type));
@@ -192,9 +205,12 @@ void worker(evthr_t *thr, void *arg, void *shared)
         index = index ^ length ^ type;
     }
 
+    pthread_rwlock_rdlock(&client->lock);
     if (client->conn == NULL) {
+        pthread_rwlock_unlock(&client->lock);
         goto closed;
     }
+    pthread_rwlock_unlock(&client->lock);
 
     output = evbuffer_new();
     assert(output != NULL);
@@ -208,25 +224,29 @@ void worker(evthr_t *thr, void *arg, void *shared)
             assert(ret == 32);
 
             /* if not in id_hash, store it into id_hash */
-            pthread_rwlock_rdlock(&global.id_hash_lock);
+            pthread_rwlock_wrlock(&global.id_hash_lock);
             HASH_FIND(hh, global.id_hash, client->id, 32, tmp);
-            pthread_rwlock_unlock(&global.id_hash_lock);
             if (tmp == NULL) {
-                pthread_rwlock_wrlock(&global.id_hash_lock);
                 HASH_ADD(hh, global.id_hash, id, 32, client);
-                pthread_rwlock_unlock(&global.id_hash_lock);
             }
+            pthread_rwlock_unlock(&global.id_hash_lock);
 
             /* store the pull_cmd */
-            client->pull_cmd = malloc(1024);
+            client->pull_cmd = calloc(1, 1024);
             assert(client->pull_cmd != NULL);
             ret = evbuffer_remove(task->input, client->pull_cmd, 1024);
             if (ret < 0) {
                 /* error */
-                FATAL_ERROR;
+                type = TYPE_ERROR;
+                evbuffer_add_printf(output, "Internal error");
+                /*ERROR_EXIT;*/
+                TRACE_ERROR("evbuffer_remove failue in client 0x%lx\n", (unsigned long)client);
             } else if (ret == 1024) {
                 /* error */
-                FATAL_ERROR;
+                type = TYPE_ERROR;
+                evbuffer_add_printf(output, "Request too long for pull message");
+                /*ERROR_EXIT;*/
+                TRACE_ERROR("request too long for pull message in client 0x%lx\n", (unsigned long)client);
             }
             client->pull_cmd_len = ret;
         } else {
@@ -242,6 +262,9 @@ void worker(evthr_t *thr, void *arg, void *shared)
             evbuffer_add_printf(output, "http error");
             break;
         }
+        /*
+        evbuffer_add_printf(output, "helloadfadfasdfasdfsadfadfasdfasdfsadfasdfasdfewifkh iohasdnfasfhsoadfhsdfksafadifioasdfnsafi");
+        */
         type = TYPE_PUSH;
         break;
     case TYPE_POST:
@@ -249,7 +272,7 @@ void worker(evthr_t *thr, void *arg, void *shared)
         assert(ret == 0);
 
         post_cmd_len = evbuffer_get_length(task->input);
-        post_cmd = malloc(post_cmd_len);
+        post_cmd = calloc(1, post_cmd_len);
         assert(post_cmd != NULL);
 
         ret = evbuffer_remove(task->input, post_cmd, post_cmd_len);
@@ -285,6 +308,7 @@ void worker(evthr_t *thr, void *arg, void *shared)
     /* send output */
     pthread_rwlock_rdlock(&client->lock);
     if (client->conn == NULL) {
+        pthread_rwlock_unlock(&client->lock);
         goto closed;
     } else {
         fd = client->conn->fd;
@@ -292,7 +316,7 @@ void worker(evthr_t *thr, void *arg, void *shared)
     pthread_rwlock_unlock(&client->lock);
 
     while (1) {
-        if (evbuffer_get_length == 0)
+        if (evbuffer_get_length(output) == 0)
             break;
         ret = evbuffer_write(output, fd);
         if (ret > 0) {
@@ -349,13 +373,19 @@ void rpc_push(evthr_t *thr, void *arg, void *shared)
 
             /* add task to pool */
             client_inc_ref(tmp);
-            ret = evthr_pool_defer(global.pool, rpc_push, rpc);
+            if (!tmp->thr) {
+                tmp->thr = evthr_pool_find_min(global.pool);
+                assert(tmp->thr != NULL);
+            }
+            ret = evthr_defer(tmp->thr, worker, rpc);
             if (ret != EVTHR_RES_OK) {
                 /* TODO */
                 client_dec_ref(tmp);
-                fprintf(stderr, "thread pool error code = %d\n", ret);
-                FATAL_ERROR;
+                TRACE("thread pool error code = %d\n", ret);
+                /*ERROR_EXIT;*/
+                TRACE_ERROR("thread defer failed with thr: 0x%lx\n", (unsigned long)tmp->thr);
             }
+            TRACE("rpc push %s\n", id);
         }
     }
 
@@ -372,7 +402,7 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
     assert(conn != NULL);
     /* timeout close client */
     if (events & EV_TIMEOUT) {
-        fprintf(stderr, "timeout\n");
+        TRACE("client 0x%lx timeout\n", (unsigned long)client);
         goto closed;
     }
     while (1) {
@@ -385,7 +415,9 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
                     break;
                 goto closed;
             } else {
-                assert(ret == sizeof(length));
+                /*assert(ret == sizeof(length));*/
+                if (ret != sizeof(length))
+                    goto closed;
                 conn->cur_len = length;
                 conn->cur_recv = 0;
                 continue;
@@ -402,9 +434,14 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
 
             client_inc_ref(client);
             /* add task to pool */
-            ret = evthr_pool_defer(global.pool, worker, task);
+            if (!client->thr) {
+                client->thr = evthr_pool_find_min(global.pool);
+                assert(client->thr != NULL);
+            }
+
+            ret = evthr_defer(client->thr, worker, task);
             if (ret != EVTHR_RES_OK) {
-                fprintf(stderr, "thread pool: %d\n", ret);
+                TRACE_ERROR("thread defer failed with errcode: %d\n", ret);
                 client_dec_ref(client);
                 goto closed;
             }
@@ -435,7 +472,10 @@ closed:
     /* delete from hash */
     hash_del(client);
     /* client closed */
+
+    pthread_rwlock_wrlock(&client->lock);
     client->conn = NULL;
+    pthread_rwlock_unlock(&client->lock);
     client_dec_ref(client);
 
     /* free conn */
@@ -475,8 +515,8 @@ void rpc_readcb(evutil_socket_t fd, short events, void *arg)
             /* add task to pool */
             ret = evthr_pool_defer(global.pool, rpc_push, task);
             if (ret != EVTHR_RES_OK) {
-                fprintf(stderr, "thread pool: %d\n", ret);
-                FATAL_ERROR;
+                /*ERROR_EXIT;*/
+                TRACE_ERROR("thread pool defer failed with errcode %d\n", ret);
             }
             conn->cur_len = 0;
             conn->cur_recv = 0;
@@ -506,14 +546,14 @@ void client_accept(evutil_socket_t listener, short event, void *arg)
 {
     struct event_base *base = arg;
     struct sockaddr_storage ss;
-    struct timeval read_timeout = {15, 0};
+    struct timeval read_timeout = {300, 0};
     client_t *client;
     socklen_t slen = sizeof(ss);
-
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     if (fd < 0) {
         perror("accept");
-        FATAL_ERROR;
+        /*ERROR_EXIT;*/
+        TRACE_ERROR("accept failed in client_accpet\n");
     } else {
         evutil_make_socket_nonblocking(fd);
         client = client_new();
@@ -538,7 +578,8 @@ void rpc_accept(evutil_socket_t listener, short event, void *arg)
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     if (fd < 0) {
         perror("accept");
-        FATAL_ERROR;
+        /*ERROR_EXIT;*/
+        TRACE_ERROR("accept failed in client_accpet\n");
     } else {
         evutil_make_socket_nonblocking(fd);
         conn = conn_new();
@@ -590,22 +631,22 @@ void start(void)
     base = event_base_new();
     assert(base != NULL);
 
-    /* listern on port_client */
-    listener = listen_on(global.port_client);
+    /* listern on client_port */
+    listener = listen_on(global.client_port);
     assert(listener > 0);
     listener_event = event_new(base, listener, EV_READ|EV_PERSIST, client_accept, (void*)base);
     assert(listener_event != NULL);
     event_add(listener_event, NULL);
 
-    /* listern on port_rpc */
-    listener = listen_on(global.port_rpc);
+    /* listern on rpc_port */
+    listener = listen_on(global.rpc_port);
     assert(listener > 0);
     listener_event = event_new(base, listener, EV_READ|EV_PERSIST, rpc_accept, (void*)base);
     assert(listener_event != NULL);
     event_add(listener_event, NULL);
 
     /* thread pool */
-    global.pool = evthr_pool_new(32, NULL, NULL);
+    global.pool = evthr_pool_new(global.thread_num, NULL, NULL);
     evthr_pool_set_backlog(global.pool, 128);
 
     evthr_pool_start(global.pool);
@@ -632,8 +673,8 @@ int http_post(const char *url, const char *content, int len, struct evbuffer *ou
 
     curl = curl_easy_init();
     if (!curl) {
-        fprintf(stderr, "could not init curl ");
-        exit(1);
+        TRACE_ERROR("could not init curl\n");
+        return -1;
     }
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_cb);
@@ -648,21 +689,95 @@ int http_post(const char *url, const char *content, int len, struct evbuffer *ou
 
 
     if (ret != CURLE_OK) {
-       fprintf(stderr, "curl_easy_perform failed: %s\n",
-       curl_easy_strerror(ret));
+       TRACE_ERROR("curl_easy_perform failed: %s\n", curl_easy_strerror(ret));
        return -1;
     }
     curl_easy_cleanup(curl);
     return 0;
 }
 
-int main(int c, char **v)
+int main(int argc, char **argv)
 {
-    setvbuf(stdout, NULL, _IONBF, 0);
-    if (sysconf(_SC_OPEN_MAX) < 1000) {
+    FILE *fp;
+    int opt, fd;
+    const char *pid_file = NULL, *log_file = NULL, *opts_short = "c:r:l:p:t:u:d";
+    struct option opts_long[] = {
+        {"client-port", 1, NULL, 'c'},
+        {"rpc-port", 1, NULL, 'r'},
+        {"log-file", 1, NULL, 'l'},
+        {"pid-file", 1, NULL, 'p'},
+        {"thread-number", 1, NULL, 't'},
+        {"url-open", 1, NULL, 'u'},
+        {"daemon-mode", 0, NULL, 'd'},
+        {0, 0, 0, 0}};
+
+    while ((opt = getopt_long(argc, argv, opts_short, opts_long, NULL)) != -1) {
+        switch (opt) {
+        case 'c':
+            global.client_port = atoi(optarg);
+            break;
+        case 'r':
+            global.rpc_port = atoi(optarg);
+            break;
+        case 'l':
+            log_file = optarg;
+            break;
+        case 'p':
+            pid_file = optarg;
+            break;
+        case 't':
+            global.thread_num = atoi(optarg);
+            break;
+        case 'u':
+            global.url = optarg;
+            break;
+        case 'd':
+            global.daemon_mode = 1;
+            break;
+        default:
+            printf("unkown option\n");
+            break;
+        }
+    }
+
+    /* run as daemon */
+    if (global.daemon_mode) {
+        /* redirect the std* file later */
+        daemon(0, 1);
+    }
+
+    if (log_file) {
+        global.fp_log = fopen(log_file, "a+");
+        if (global.fp_log == NULL) {
+            fprintf(stderr, "fopen");
+            ERROR_EXIT;
+        }
+    }
+
+    if (pid_file) {
+        fp = fopen(pid_file, "w");
+        if (fp == NULL) {
+            fprintf(stderr, "fopen: %s", pid_file);
+            ERROR_EXIT;
+        }
+        fprintf(fp, "%d", getpid());
+        fclose(fp);
+    }
+
+    if (global.daemon_mode) {
+        fd = open("/dev/null", O_RDWR);
+        dup2(fd, STDIN_FILENO);
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+    }
+
+    /*
+    if (sysconf(_SC_OPEN_MAX) < 10000) {
         fprintf(stderr, "open max is %ld\n", sysconf(_SC_OPEN_MAX));
         exit(0);
     }
+    */
     start();
     return 0;
 }
