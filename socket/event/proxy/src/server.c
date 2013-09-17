@@ -185,6 +185,7 @@ void client_free(client_t *client)
         free(client->pull_cmd);
     }
 
+    free_request(&client->request);
     TRACE("free client 0x%lx\n", (unsigned long)client);
     free(client);
 }
