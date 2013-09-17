@@ -32,14 +32,22 @@
 #define TRACE(fmt, args...) fprintf(global.fp_log, fmt, ##args)
 #define TRACE_ERROR(fmt, args...) fprintf(global.fp_log, "ERROR at line %d" fmt, __LINE__, ##args)
 
+/* Websocket RFC6455 */
+#define OPCODE_CONTINUATION_FRAME  0x0;
+#define OPCODE_TEXT_FRAME          0x1;
+#define OPCODE_BINARY_FRAME        0x2;
+#define OPCODE_CONNECTION_CLOSE    0x8;
+#define OPCODE_PING                0x9;
+#define OPCODE_PONG                0xa;
 
 typedef struct conn {
     int fd;
     struct evbuffer *buffer;
     struct event *event;
-    int cur_recv;
-    int cur_len;
 } conn_t;
+
+typedef struct frame_state {
+} frame_state_t;
 
 typedef struct client {
     char id[32];
@@ -50,6 +58,8 @@ typedef struct client {
     int refcnt;
     pthread_rwlock_t lock;
 
+    int handshake;
+    frame_state_t state_frame;
     evthr_t *thr;
 
     UT_hash_handle hh;
@@ -392,6 +402,7 @@ void rpc_push(evthr_t *thr, void *arg, void *shared)
     task_free(task);
 }
 
+#define READ_SIZE 1024
 void client_readcb(evutil_socket_t fd, short events, void *arg)
 {
     int ret;
@@ -405,32 +416,42 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
         TRACE("client 0x%lx timeout\n", (unsigned long)client);
         goto closed;
     }
-    while (1) {
-        if (conn->cur_len == 0) {
-            ret = read(fd, &length, sizeof(length));
-            if (ret == 0) {
-                goto closed;
-            } else if (ret < 0) {
-                if (errno == EAGAIN)
-                    break;
-                goto closed;
-            } else {
-                /*assert(ret == sizeof(length));*/
-                if (ret != sizeof(length))
-                    goto closed;
-                conn->cur_len = length;
-                conn->cur_recv = 0;
-                continue;
-            }
-        }
 
-        /* task receive finished */
-        if (conn->cur_recv == conn->cur_len) {
+    while (1) {
+        ret = evbuffer_read(conn->buffer, fd, READ_SIZE);
+        if (ret < 0) {
+            if (errno == EAGAIN)
+                break;
+            if (errno == EINTR)
+                continue;
+            goto closed;
+        } else if (ret == 0) {
+            goto closed;
+        } else if (ret == READ_SIZE) {
+            continue;
+        } else {
+            break;
+        }
+    }
+
+    if (!client->handshake) {
+        /* TODO handshake */
+        client->handshake = 1;
+    }
+
+    while (1) {
+        ret = evbuffer_copyout(conn->buffer, &length, sizeof(length));
+        if (ret != sizeof(length))
+            break;
+        if (length + sizeof(length) <= evbuffer_get_length(conn->buffer)) {
+            /* add new task */
             task_t *task = task_new();
             assert(task != NULL);
             task->data = client;
-            ret = evbuffer_add_buffer(task->input, conn->buffer);
-            assert(ret == 0);
+            ret = evbuffer_remove(conn->buffer, &length, sizeof(length));
+            assert(ret == sizeof(length));
+            ret = evbuffer_remove_buffer(conn->buffer, task->input, length);
+            assert(ret == length);
 
             client_inc_ref(client);
             /* add task to pool */
@@ -445,21 +466,8 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
                 client_dec_ref(client);
                 goto closed;
             }
-            conn->cur_len = 0;
-            conn->cur_recv = 0;
-            continue;
-        }
-
-        /* continue read */
-        ret = evbuffer_read(conn->buffer, fd, conn->cur_len - conn->cur_recv);
-        if (ret == 0) {
-            goto closed;
-        } else if (ret < 0) {
-            if (errno == EAGAIN)
-                break;
-            goto closed;
         } else {
-            conn->cur_recv += ret;
+            break;
         }
     }
     return;
@@ -489,49 +497,50 @@ void rpc_readcb(evutil_socket_t fd, short events, void *arg)
     conn_t *conn = (conn_t *)arg;
     uint32_t length;
 
-    while (1) {
-        if (conn->cur_len == 0) {
-            ret = read(fd, &length, sizeof(length));
-            if (ret == 0) {
-                goto closed;
-            } else if (ret < 0) {
-                if (errno == EAGAIN)
-                    break;
-                goto closed;
-            } else {
-                assert(ret == sizeof(length));
-                conn->cur_len = length;
-                conn->cur_recv = 0;
-            }
-        }
+    /* timeout close */
+    if (events & EV_TIMEOUT) {
+        goto closed;
+    }
 
-        /* task receive finished */
-        if (conn->cur_recv == conn->cur_len) {
+    while (1) {
+        ret = evbuffer_read(conn->buffer, fd, READ_SIZE);
+        if (ret < 0) {
+            if (errno == EAGAIN)
+                break;
+            if (errno == EINTR)
+                continue;
+            goto closed;
+        } else if (ret == 0) {
+            goto closed;
+        } else if (ret == READ_SIZE) {
+            continue;
+        } else {
+            break;
+        }
+    }
+
+    while (1) {
+        ret = evbuffer_copyout(conn->buffer, &length, sizeof(length));
+        if (ret != sizeof(length))
+            break;
+        if (length + sizeof(length) <= evbuffer_get_length(conn->buffer)) {
+            /* add new task */
             task_t *task = task_new();
             assert(task != NULL);
-            ret = evbuffer_add_buffer(task->input, conn->buffer);
-            assert(ret == 0);
+            ret = evbuffer_remove(conn->buffer, &length, sizeof(length));
+            assert(ret == sizeof(length));
+            ret = evbuffer_remove_buffer(conn->buffer, task->input, length);
+            assert(ret == length);
 
             /* add task to pool */
             ret = evthr_pool_defer(global.pool, rpc_push, task);
             if (ret != EVTHR_RES_OK) {
                 /*ERROR_EXIT;*/
                 TRACE_ERROR("thread pool defer failed with errcode %d\n", ret);
+                goto closed;
             }
-            conn->cur_len = 0;
-            conn->cur_recv = 0;
-        }
-
-        /* continue read */
-        ret = evbuffer_read(conn->buffer, fd, conn->cur_len - conn->cur_recv);
-        if (ret == 0) {
-            goto closed;
-        } else if (ret < 0) {
-            if (errno == EAGAIN)
-                break;
-            goto closed;
         } else {
-            conn->cur_recv += ret;
+            break;
         }
     }
     return;
@@ -541,6 +550,7 @@ closed:
     event_free(conn->event);
     conn_free(conn);
 }
+
 
 void client_accept(evutil_socket_t listener, short event, void *arg)
 {
@@ -571,7 +581,7 @@ void rpc_accept(evutil_socket_t listener, short event, void *arg)
 {
     struct event_base *base = arg;
     struct sockaddr_storage ss;
-    struct timeval read_timeout = {300, 0};
+    struct timeval read_timeout = {3, 0};
     conn_t *conn;
     socklen_t slen = sizeof(ss);
 
@@ -695,6 +705,86 @@ int http_post(const char *url, const char *content, int len, struct evbuffer *ou
     curl_easy_cleanup(curl);
     return 0;
 }
+
+#if 0
+int parse_frame(ebbuffer *input, frame_state_t *state)
+{
+    uint8_t *cur = frame;
+    uint8_t fin, rsv, opcode, mask, mask_key[4];
+    uint32_t length;
+    void *data;
+
+    
+    fin = (*cur >> 7) & 0x01;
+    rsv = (*cur >> 4) & 0x07;
+    opcode = *cur & 0x0f;
+    cur++;
+
+    mask = (*cur >> 7) & 0x01;
+    length = *cur & 0x7f;
+    cur++;
+
+    if (length == 0x7e) {
+        length = ntohs(*(uint16_t *)cur);
+        cur += 2;
+    } else if (length == 0x7f) {
+        length = ntohl(*(uint32_t *)cur);
+        /* only support 32bit length now */
+        if (length) {
+            /* close */
+        }
+        cur += 4;
+        length = ntohl(*(uint32_t *)cur);
+        cur += 4;
+    }
+
+    if (mask) {
+        mask_key[0] = *cur++;
+        mask_key[1] = *cur++;
+        mask_key[2] = *cur++;
+        mask_key[3] = *cur++;
+    }
+
+    /* TODO */
+    data = cur;
+
+    if (!fin) {
+        /* close */
+    }
+
+    if (rsv) {
+        /* close */
+    }
+
+    switch (opcode) {
+    case OPCODE_CONTINUATION_FRAME:
+        /* close */
+        break;
+    case OPCODE_TEXT_FRAME:
+        /* close */
+        break;
+    case OPCODE_BINARY_FRAME:
+        /* TODO */
+        break;
+    case OPCODE_CONNECTION_CLOSE:
+        /* TODO */
+        break;
+    case OPCODE_PING:
+        /* TODO */
+        break;
+    case OPCODE_PONG:
+        /* TODO */
+        break;
+    default:
+        /* close */
+    }
+}
+
+int handshake()
+{
+}
+
+#endif
 
 int main(int argc, char **argv)
 {
