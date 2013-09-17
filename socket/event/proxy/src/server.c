@@ -23,31 +23,41 @@
 #include <curl/curl.h>
 #include "evthr.h"
 #include "server.h"
+#include "http_parser.h"
+#include "sha1.h"
+#include "base64_enc.h"
+
+/* Websocket RFC6455 */
+#define OPCODE_CONTINUATION_FRAME  0x0
+#define OPCODE_TEXT_FRAME          0x1
+#define OPCODE_BINARY_FRAME        0x2
+#define OPCODE_CONNECTION_CLOSE    0x8
+#define OPCODE_PING                0x9
+#define OPCODE_PONG                0xa
+
+typedef struct http_request {
+    char *url;
+    char *Connection;
+    char *Upgrade;
+    char *Sec_WebSocket_Key;
+    char *Sec_WebSocket_Protocol;
+    char **current_field;
+    int completed;
+} http_request_t;
 
 #define ERROR_EXIT do {\
     fprintf(stderr, "fatal errorat %d\n", __LINE__);\
     exit(1);\
 } while(0)
 
-#define TRACE(fmt, args...) fprintf(global.fp_log, fmt, ##args)
-#define TRACE_ERROR(fmt, args...) fprintf(global.fp_log, "ERROR at line %d" fmt, __LINE__, ##args)
-
-/* Websocket RFC6455 */
-#define OPCODE_CONTINUATION_FRAME  0x0;
-#define OPCODE_TEXT_FRAME          0x1;
-#define OPCODE_BINARY_FRAME        0x2;
-#define OPCODE_CONNECTION_CLOSE    0x8;
-#define OPCODE_PING                0x9;
-#define OPCODE_PONG                0xa;
+#define TRACE(fmt, args...) fprintf(stderr, fmt, ##args)
+#define TRACE_ERROR(fmt, args...) fprintf(stderr, "ERROR at line %d" fmt, __LINE__, ##args)
 
 typedef struct conn {
     int fd;
     struct evbuffer *buffer;
     struct event *event;
 } conn_t;
-
-typedef struct frame_state {
-} frame_state_t;
 
 typedef struct client {
     char id[32];
@@ -58,8 +68,13 @@ typedef struct client {
     int refcnt;
     pthread_rwlock_t lock;
 
+    /* websocket */
+    http_parser parser;
+    http_parser_settings parser_settings;
+    http_request_t request;
     int handshake;
-    frame_state_t state_frame;
+    int frame_started;
+
     evthr_t *thr;
 
     UT_hash_handle hh;
@@ -70,12 +85,25 @@ typedef struct task {
     void *data;
 } task_t;
 
+typedef struct websocket_head {
+    uint8_t fin;
+    uint8_t rsv;
+    uint8_t opcode;
+    uint8_t mask;
+    uint32_t length;
+    uint8_t mask_key[4];
+
+    int offset;
+} websocket_head_t;
+
+
 /* global variables */
 static struct {
     int client_port;
     int rpc_port;
     int thread_num;
     int daemon_mode;
+    const char *websocket_secret;
     const char *url;
     evthr_pool_t *pool;
     client_t *id_hash;
@@ -85,7 +113,8 @@ static struct {
     54574,
     54575,
     16,
-    0,
+    0, 
+    "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
     NULL,
     NULL,
     NULL,
@@ -102,7 +131,17 @@ client_t *client_new();
 void client_free();
 task_t *task_new();
 void task_free();
+int parser_url_cb(http_parser *p, const char *buf, size_t len);
+int parser_header_field_cb(http_parser *p, const char *buf, size_t len);
+int parser_header_value_cb(http_parser *p, const char *buf, size_t len);
+int parser_message_complete_cb(http_parser *p);
+void free_request(http_request_t *request);
 
+int http_response(int fd);
+int handshake(client_t *client, int fd);
+int send_close_frame(int fd);
+int add_binary_frame_head(struct evbuffer *buffer);
+int add_text_frame_head(struct evbuffer *buffer);
 conn_t *conn_new()
 {
     conn_t *conn = calloc(1, sizeof(conn_t));
@@ -129,6 +168,12 @@ client_t *client_new()
         free(client);
         return NULL;
     }
+
+    client->parser_settings.on_url = parser_url_cb;
+    client->parser_settings.on_header_field = parser_header_field_cb;
+    client->parser_settings.on_header_value = parser_header_value_cb;
+    client->parser_settings.on_message_complete = parser_message_complete_cb;
+
 
     TRACE("new client 0x%lx\n", (unsigned long)client);
     return client;
@@ -192,6 +237,47 @@ void hash_del(client_t *client)
     pthread_rwlock_unlock(&global.id_hash_lock);
 }
 
+void echo(evthr_t *thr, void *arg, void *shared)
+{
+    task_t *task = (task_t *)arg;
+    client_t *client = (client_t *)task->data;
+    int fd, ret, length;
+
+    /* send output */
+    pthread_rwlock_rdlock(&client->lock);
+    if (client->conn == NULL) {
+        pthread_rwlock_unlock(&client->lock);
+        goto closed;
+    } else {
+        fd = client->conn->fd;
+    }
+    pthread_rwlock_unlock(&client->lock);
+
+    TRACE("before output\n");
+    /* output */
+    while (1) {
+        length = evbuffer_get_length(task->input);
+        TRACE("output buffer length = %d\n", length);
+        if (length == 0)
+            break;
+        ret = evbuffer_write(task->input, fd);
+        if (ret > 0) {
+            continue;
+        } else if (ret == 0) {
+            goto closed;
+        } else {
+            if (errno == EAGAIN) {
+                usleep(1000);
+                continue;
+            }
+            goto closed;
+        }
+    }
+    TRACE("after output\n");
+closed:
+    client_dec_ref(client);
+    task_free(task);
+}
 
 void worker(evthr_t *thr, void *arg, void *shared)
 {
@@ -315,6 +401,11 @@ void worker(evthr_t *thr, void *arg, void *shared)
     ret = evbuffer_prepend(output, &length, sizeof(length));
     assert(ret == 0);
 
+
+    /* add wesocket frame head */
+    ret = add_binary_frame_head(output);
+    assert(ret == 0);
+
     /* send output */
     pthread_rwlock_rdlock(&client->lock);
     if (client->conn == NULL) {
@@ -408,7 +499,11 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
     int ret;
     client_t *client = (client_t *)arg;
     conn_t *conn = client->conn;
-    uint32_t length;
+    task_t *task;
+    uint32_t i, length;
+    const char *request;
+    websocket_head_t head;
+    uint8_t *tmp;
 
     assert(conn != NULL);
     /* timeout close client */
@@ -436,10 +531,114 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
 
     if (!client->handshake) {
         /* TODO handshake */
-        client->handshake = 1;
+        length = evbuffer_get_length(conn->buffer);
+        TRACE("request length=%d\n", length);
+        request = malloc(length);
+        evbuffer_copyout(conn->buffer, request, length); 
+
+        http_parser_init(&client->parser, HTTP_REQUEST);
+        client->parser.data = client;
+        ret = http_parser_execute(&client->parser, &client->parser_settings, request, length);
+        if (ret < length) {
+            printf("less than length\n");
+        }
+        ret = evbuffer_drain(conn->buffer, ret);
+        assert(ret == 0);
+        free(request);
+
+        if (!client->request.completed) {
+            http_response(fd);
+            goto closed;
+        }
+
+        /* TODO: check request */
+        if (!client->request.url) {
+            http_response(fd);
+            goto closed;
+        }
+
+        if (!client->request.Sec_WebSocket_Key) {
+            http_response(fd);
+            goto closed;
+        }
+
+        if (!client->request.Upgrade) {
+            http_response(fd);
+            goto closed;
+        }
+
+        if (!client->request.Connection) {
+            http_response(fd);
+            goto closed;
+        }
+
+        ret = handshake(client, fd);
+        if (ret == 0) {
+            TRACE("handshake done\n");
+            client->handshake = 1;
+        }
     }
 
     while (1) {
+        TRACE("before parse\n");
+        ret = parse_frame(conn->buffer, &head);
+        if (ret < 0) {
+            break;
+        }
+        TRACE("after parse\n");
+        switch (head.opcode) {
+            /* only support binary data */
+        case OPCODE_TEXT_FRAME:
+        case OPCODE_BINARY_FRAME:
+
+            /* add new task */
+            task = task_new();
+            assert(task != NULL);
+            task->data = client;
+
+            ret = evbuffer_drain(conn->buffer, head.offset);
+            assert(ret == 0);
+            tmp = malloc(head.length);
+            ret = evbuffer_remove(conn->buffer, tmp, head.length);
+            assert(ret == head.length);
+            for (i = 0; i < head.length; i++) {
+                tmp[i] ^= head.mask_key[i % 4];
+                printf("%c", tmp[i]);
+            }
+            ret = evbuffer_add(task->input, tmp, head.length);
+            assert(ret == 0);
+            free(tmp);
+
+            /*
+            ret = evbuffer_remove_buffer(conn->buffer, task->input, head.offset + head.length);
+            assert(ret == head.offset + head.length);
+            */
+
+            client_inc_ref(client);
+            /* add task to pool */
+            if (!client->thr) {
+                client->thr = evthr_pool_find_min(global.pool);
+                assert(client->thr != NULL);
+            }
+
+            if (head.opcode == OPCODE_BINARY_FRAME)
+                ret = evthr_defer(client->thr, worker, task);
+            else
+                ret = evthr_defer(client->thr, echo, task);
+            if (ret != EVTHR_RES_OK) {
+                TRACE_ERROR("thread defer failed with errcode: %d\n", ret);
+                client_dec_ref(client);
+                goto closed;
+            }
+            break;
+        case OPCODE_CONNECTION_CLOSE:
+        case OPCODE_PING:
+        case OPCODE_PONG:
+        default:
+            send_close_frame(fd);
+            goto closed;
+        }
+#if 0
         ret = evbuffer_copyout(conn->buffer, &length, sizeof(length));
         if (ret != sizeof(length))
             break;
@@ -469,6 +668,7 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
         } else {
             break;
         }
+#endif
     }
     return;
 closed:
@@ -706,85 +906,6 @@ int http_post(const char *url, const char *content, int len, struct evbuffer *ou
     return 0;
 }
 
-#if 0
-int parse_frame(ebbuffer *input, frame_state_t *state)
-{
-    uint8_t *cur = frame;
-    uint8_t fin, rsv, opcode, mask, mask_key[4];
-    uint32_t length;
-    void *data;
-
-    
-    fin = (*cur >> 7) & 0x01;
-    rsv = (*cur >> 4) & 0x07;
-    opcode = *cur & 0x0f;
-    cur++;
-
-    mask = (*cur >> 7) & 0x01;
-    length = *cur & 0x7f;
-    cur++;
-
-    if (length == 0x7e) {
-        length = ntohs(*(uint16_t *)cur);
-        cur += 2;
-    } else if (length == 0x7f) {
-        length = ntohl(*(uint32_t *)cur);
-        /* only support 32bit length now */
-        if (length) {
-            /* close */
-        }
-        cur += 4;
-        length = ntohl(*(uint32_t *)cur);
-        cur += 4;
-    }
-
-    if (mask) {
-        mask_key[0] = *cur++;
-        mask_key[1] = *cur++;
-        mask_key[2] = *cur++;
-        mask_key[3] = *cur++;
-    }
-
-    /* TODO */
-    data = cur;
-
-    if (!fin) {
-        /* close */
-    }
-
-    if (rsv) {
-        /* close */
-    }
-
-    switch (opcode) {
-    case OPCODE_CONTINUATION_FRAME:
-        /* close */
-        break;
-    case OPCODE_TEXT_FRAME:
-        /* close */
-        break;
-    case OPCODE_BINARY_FRAME:
-        /* TODO */
-        break;
-    case OPCODE_CONNECTION_CLOSE:
-        /* TODO */
-        break;
-    case OPCODE_PING:
-        /* TODO */
-        break;
-    case OPCODE_PONG:
-        /* TODO */
-        break;
-    default:
-        /* close */
-    }
-}
-
-int handshake()
-{
-}
-
-#endif
 
 int main(int argc, char **argv)
 {
@@ -871,3 +992,246 @@ int main(int argc, char **argv)
     start();
     return 0;
 }
+
+int parser_url_cb(http_parser *p, const char *buf, size_t len)
+{
+    client_t *client = (client_t *)p->data;
+    client->request.url = malloc(len + 1);
+    memcpy(client->request.url, buf, len);
+    client->request.url[len] = 0;
+    return 0;
+}
+
+int parser_header_field_cb(http_parser *p, const char *buf, size_t len)
+{
+    client_t *client = (client_t *)p->data;
+    if (!strncmp("Connection", buf, len)) {
+        client->request.current_field = &client->request.Connection;
+    } else if (!strncmp("Upgrade", buf, len)) {
+        client->request.current_field = &client->request.Upgrade;
+    } else if (!strncmp("Sec-WebSocket-Key", buf, len)) {
+        client->request.current_field = &client->request.Sec_WebSocket_Key;
+    } else if (!strncmp("Sec-WebSocket-Protocal", buf, len)) {
+        client->request.current_field = &client->request.Sec_WebSocket_Protocol;
+    } else {
+        client->request.current_field = 0;
+    }
+    return 0;
+}
+
+int parser_header_value_cb(http_parser *p, const char *buf, size_t len)
+{
+    client_t *client = (client_t *)p->data;
+    if (!client->request.current_field)
+        return 0;
+    *(client->request.current_field) = malloc(len + 1);
+    memcpy(*(client->request.current_field), buf, len);
+    (*(client->request.current_field))[len] = 0;
+    client->request.current_field = 0;
+    return 0;
+}
+
+int parser_message_complete_cb(http_parser *p)
+{
+    client_t *client = (client_t *)p->data;
+    client->request.completed = 1;
+    return 0;
+}
+
+int http_response(int fd)
+{
+    const char *response = "HTTP/1.1 200 OK\r\n"
+            "Server: WebSocket\r\n"
+            "Content-Length: 8\r\n"
+            "Connection: close\r\n"
+            "Content-Type: text/html\r\n"
+            "\r\nIt works";
+    int ret, length, offset = 0;
+    length = strlen(response);
+    while (1) {
+        ret = write(fd, response + offset, length - offset);
+        if (ret < 0) {
+            if (errno == EAGAIN || errno == EINTR) {
+                usleep(1000);
+                continue;
+            }
+            return -1;
+        } else if (ret == 0) {
+            return -1;
+        } else {
+            offset += ret;
+            if (offset == length)
+                break;
+        }
+    }
+    return 0;
+}
+
+int handshake(client_t *client, int fd)
+{
+
+    char tmp1[128], tmp2[128], response[1024];
+    int ret, length, offset = 0;
+    sprintf(tmp1, "%s%s", client->request.Sec_WebSocket_Key, global.websocket_secret);
+    sha1(tmp2, tmp1, strlen(tmp1) << 3);
+    base64enc(tmp1, tmp2, 20);
+    length = sprintf(response, "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Accept: %s\r\n"
+            "\r\n", tmp1);
+    while (1) {
+        ret = write(fd, response + offset, length - offset);
+        if (ret < 0) {
+            if (errno == EAGAIN || errno == EINTR) {
+                usleep(1000);
+                continue;
+            }
+            return -1;
+        } else if (ret == 0) {
+            return -1;
+        } else {
+            offset += ret;
+            if (offset == length)
+                break;
+        }
+    }
+    return 0;
+}
+
+/*
+ * return values:
+ * 0  ---- frame complete
+ * -1 ---- frame not complete
+ */
+int parse_frame(struct evbuffer *buffer, websocket_head_t *head)
+{
+    uint8_t tmp[16], *cur = tmp;
+    uint32_t buf_len;
+    buf_len = evbuffer_get_length(buffer);
+    memset(head, 0, sizeof(websocket_head_t));
+
+    TRACE("buf_len = %d\n", buf_len);
+    if (buf_len < 2) {
+        return -1;
+    } else if (buf_len < sizeof(tmp)) {
+        evbuffer_copyout(buffer, tmp, buf_len);
+    } else {
+        evbuffer_copyout(buffer, tmp, sizeof(tmp));
+    }
+
+    head->fin = (*cur >> 7) & 0x01;
+    head->rsv = (*cur >> 4) & 0x07;
+    head->opcode = *cur & 0x0f;
+    cur++;
+
+    head->mask = (*cur >> 7) & 0x01;
+    head->length = *cur & 0x7f;
+    cur++;
+
+    TRACE("length1 = %d\n", head->length);
+    if (head->length < 0x7e) {
+        if (buf_len < 2 + head->mask * 4 + head->length)
+            return -1;
+    } else if (head->length == 0x7e) {
+        head->length = ntohs(*(uint16_t *)cur);
+        cur += 2;
+        if (buf_len < 4 + head->mask * 4 + head->length)
+            return -1;
+    } else if (head->length == 0x7f) {
+        head->length = ntohl(*(uint32_t *)cur);
+        if (head->length) {
+            /* head->length > 2^32 - 1 not support now */
+        }
+        cur += 4;
+        head->length = ntohl(*(uint32_t *)cur);
+        cur += 4;
+        if (buf_len < 10 + head->mask * 4 + head->length)
+            return -1;
+    }
+    if (head->mask) {
+        head->mask_key[0] = *cur++;
+        head->mask_key[1] = *cur++;
+        head->mask_key[2] = *cur++;
+        head->mask_key[3] = *cur++;
+    }
+    head->offset = cur - tmp;
+    return 0;
+}
+
+int send_close_frame(int fd)
+{
+    uint8_t tmp[2];
+    tmp[0] = 0x88;
+    tmp[1] = 0x00;
+    while (write(fd, tmp, sizeof(tmp)) < 0) {
+        if (errno == EAGAIN || errno == EINTR) {
+            usleep(1000);
+            continue;
+        }
+    }
+}
+
+int add_binary_frame_head(struct evbuffer *buffer)
+{
+    uint8_t tmp[16], *cur = tmp;
+    uint32_t ret, length = evbuffer_get_length(buffer);
+
+    *cur++ = 0x80 | OPCODE_BINARY_FRAME;
+    /* no mask */
+    *cur = 0x00;
+    if (length < 0x7e) {
+        *cur++ |= (uint8_t)length;
+    } else if (length <= 0xffff) {
+        *cur++ |= (uint8_t)0x7e;
+        *((uint16_t *)cur) = htons((uint16_t)length);
+        cur += 2;
+    } else {
+        *cur++ |= (uint8_t)0x7f;
+        *((uint32_t *)cur) = 0x00000000;
+        cur += 4;
+        *((uint32_t *)cur) = htonl(length);
+        cur += 4;
+    }
+    return evbuffer_prepend(buffer, tmp, cur - tmp);
+}
+
+int add_text_frame_head(struct evbuffer *buffer)
+{
+    uint8_t tmp[16], *cur = tmp;
+    uint32_t ret, length = evbuffer_get_length(buffer);
+
+    *cur++ = 0x80 | OPCODE_TEXT_FRAME;
+    /* no mask */
+    *cur = 0x00;
+    if (length < 0x7e) {
+        *cur++ |= (uint8_t)length;
+    } else if (length <= 0xffff) {
+        *cur++ |= (uint8_t)0x7e;
+        *((uint16_t *)cur) = htons((uint16_t)length);
+        cur += 2;
+    } else {
+        *cur++ |= (uint8_t)0x7f;
+        *((uint32_t *)cur) = 0x00000000;
+        cur += 4;
+        *((uint32_t *)cur) = htonl(length);
+        cur += 4;
+    }
+    return evbuffer_prepend(buffer, tmp, cur - tmp);
+}
+
+void free_request(http_request_t *request)
+{
+    if (request->url)
+        free(request->url);
+    if (request->Connection)
+        free(request->Connection);
+    if (request->Upgrade)
+        free(request->Upgrade);
+    if (request->Sec_WebSocket_Key)
+        free(request->Sec_WebSocket_Key);
+    if (request->Sec_WebSocket_Protocol)
+        free(request->Sec_WebSocket_Protocol);
+    memset(request, 0, sizeof(http_request_t));
+}
+
