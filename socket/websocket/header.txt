@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+Server: WebSocket
+Content-Length: 11
+Connection: close
+Content-Type: text/html
+
