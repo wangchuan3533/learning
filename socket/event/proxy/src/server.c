@@ -253,6 +253,10 @@ void echo(evthr_t *thr, void *arg, void *shared)
     }
     pthread_rwlock_unlock(&client->lock);
 
+    /* add wesocket frame head */
+    ret = add_text_frame_head(task->input);
+    assert(ret == 0);
+
     TRACE("before output\n");
     /* output */
     while (1) {
@@ -605,6 +609,7 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
                 tmp[i] ^= head.mask_key[i % 4];
                 printf("%c", tmp[i]);
             }
+            printf("\n");
             ret = evbuffer_add(task->input, tmp, head.length);
             assert(ret == 0);
             free(tmp);
