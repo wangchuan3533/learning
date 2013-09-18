@@ -1,6 +1,5 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <getopt.h>
 #include <fcntl.h>
@@ -50,8 +49,8 @@ typedef struct http_request {
     exit(1);\
 } while(0)
 
-#define TRACE(fmt, args...) fprintf(stderr, fmt, ##args)
-#define TRACE_ERROR(fmt, args...) fprintf(stderr, "ERROR at line %d" fmt, __LINE__, ##args)
+#define TRACE(fmt, args...) fprintf(global.fp_log, fmt, ##args)
+#define TRACE_ERROR(fmt, args...) fprintf(global.fp_log, "ERROR at line %d" fmt, __LINE__, ##args)
 
 typedef struct conn {
     int fd;
@@ -258,11 +257,9 @@ void echo(evthr_t *thr, void *arg, void *shared)
     ret = add_text_frame_head(task->input);
     assert(ret == 0);
 
-    TRACE("before output\n");
     /* output */
     while (1) {
         length = evbuffer_get_length(task->input);
-        TRACE("output buffer length = %d\n", length);
         if (length == 0)
             break;
         ret = evbuffer_write(task->input, fd);
@@ -278,7 +275,6 @@ void echo(evthr_t *thr, void *arg, void *shared)
             goto closed;
         }
     }
-    TRACE("after output\n");
 closed:
     client_dec_ref(client);
     task_free(task);
@@ -287,24 +283,15 @@ closed:
 void worker(evthr_t *thr, void *arg, void *shared)
 {
     int ret, post_cmd_len, fd;
-    uint32_t length, type, index;
+    uint8_t type;
     char *post_cmd;
     struct evbuffer *output;
     task_t *task = (task_t *)arg;
     client_t *tmp, *client = (client_t *)task->data;
 
     assert(client->refcnt >= 0);
-    length = evbuffer_get_length(task->input);
-    assert (length > 2 * sizeof(uint32_t));
     ret = evbuffer_remove(task->input, &type, sizeof(type));
     assert(ret == sizeof(type));
-    ret = evbuffer_remove(task->input, &index, sizeof(index));
-    assert(ret == sizeof(index));
-
-    /* calc the output index */
-    if (index != 0) {
-        index = index ^ length ^ type;
-    }
 
     pthread_rwlock_rdlock(&client->lock);
     if (client->conn == NULL) {
@@ -398,14 +385,8 @@ void worker(evthr_t *thr, void *arg, void *shared)
     }
 
     /* package head */
-    ret = evbuffer_prepend(output, &index, sizeof(index));
-    assert(ret == 0);
     ret = evbuffer_prepend(output, &type, sizeof(type));
     assert(ret == 0);
-    length = evbuffer_get_length(output);
-    ret = evbuffer_prepend(output, &length, sizeof(length));
-    assert(ret == 0);
-
 
     /* add wesocket frame head */
     ret = add_binary_frame_head(output);
@@ -446,14 +427,13 @@ void rpc_push(evthr_t *thr, void *arg, void *shared)
 {
     int ret;
     char id[32];
-    uint32_t type, index;
+    uint8_t type;
     client_t *tmp;
     task_t *rpc, *task = (task_t *)arg;
 
     /* type & index */
     ret = evbuffer_drain(task->input, 2 * sizeof(uint32_t));
     assert(ret == 0);
-
     /* id */
     ret = evbuffer_remove(task->input, id, 32);
     assert(ret == 32);
@@ -468,11 +448,8 @@ void rpc_push(evthr_t *thr, void *arg, void *shared)
             rpc = task_new();
             rpc->data = tmp;
             type = TYPE_PULL;
-            index = 0;
 
             ret = evbuffer_add(rpc->input, &type, sizeof(type));
-            assert(ret == 0);
-            ret = evbuffer_add(rpc->input, &index, sizeof(index));
             assert(ret == 0);
             ret = evbuffer_add(rpc->input, tmp->pull_cmd, tmp->pull_cmd_len);
             assert(ret == 0);
@@ -537,7 +514,6 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
     if (!client->handshake) {
         /* TODO handshake */
         length = evbuffer_get_length(conn->buffer);
-        TRACE("request length=%d\n", length);
         request = malloc(length);
         evbuffer_copyout(conn->buffer, request, length); 
 
@@ -579,18 +555,15 @@ void client_readcb(evutil_socket_t fd, short events, void *arg)
 
         ret = handshake(client, fd);
         if (ret == 0) {
-            TRACE("handshake done\n");
             client->handshake = 1;
         }
     }
 
     while (1) {
-        TRACE("before parse\n");
         ret = parse_frame(conn->buffer, &head);
         if (ret < 0) {
             break;
         }
-        TRACE("after parse\n");
         switch (head.opcode) {
             /* only support binary data */
         case OPCODE_TEXT_FRAME:
@@ -762,7 +735,7 @@ void client_accept(evutil_socket_t listener, short event, void *arg)
 {
     struct event_base *base = arg;
     struct sockaddr_storage ss;
-    struct timeval read_timeout = {300, 0};
+    struct timeval read_timeout = {1800, 0};
     client_t *client;
     socklen_t slen = sizeof(ss);
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);

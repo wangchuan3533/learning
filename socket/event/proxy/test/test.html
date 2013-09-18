@@ -3,7 +3,28 @@
 <title>WebSocket Test</title>  
 <script language="javascript" type="text/javascript">
 	var wsUri = "ws://customerlive/"; 
-	var output; 
+	var output;
+	var str_id = "10099@2481399642";
+	var str_pullRequest =  "uin=&skey=&client=customerlive&format=JSON&ip=&cid=&ts=1378814975&method=message.listMessage&args%5Baccount%5D=10099%402481399642&ver=1.0&sig=8e03a84aa5f80a68b66d9d80d59995d2";
+	var length = 33 + str_pullRequest.length;
+	var buffer = new ArrayBuffer(length);
+	var type= new Uint8Array(buffer, 0, 1);
+	var id = new Uint8Array(buffer, 1, 32);
+	var pullRequest = new Uint8Array(buffer, 33, str_pullRequest.length);
+	var result;
+	var result_str;
+	var result_type;
+	type[0] = 2;
+	for (i = 0; i < str_id.length; i++) {
+		id[i] = str_id.charCodeAt(i);
+	}
+	for (;i < id.length; i++) {
+		id[i] = 0;
+	}
+	for (i = 0; i < str_pullRequest.length; i++) {
+		pullRequest[i] = str_pullRequest.charCodeAt(i);
+	}
+	
 	function init()
 	 { 
 		output = document.getElementById("output"); 
@@ -20,15 +41,26 @@
 	function onOpen(evt) 
 	{ 
 		writeToScreen("CONNECTED"); 
-		doSend("WebSocket rocks"); 
+		doSend(buffer); 
 	}  
 	function onClose(evt) 
 	{ 
 		writeToScreen("DISCONNECTED"); 
 	}  
 	function onMessage(evt) 
-	{ 
-		writeToScreen('<span style="color: blue;">RESPONSE: ' + evt.data+'</span>'); 
+	{
+		
+		var fileReader = new FileReader();
+		fileReader.onloadend = function() {
+			result = this.result;
+			result_type = new Uint8Array(result, 0, 1);
+			byteArray = new Int8Array(result, 1);
+			result_str = String.fromCharCode.apply(null, byteArray);
+			writeToScreen('<span style="color: blue;">RESPONSE: ' + result_str +'</span>'); 
+		};
+		fileReader.readAsArrayBuffer(evt.data);
+		
+		
 		//websocket.close(); 
 	}  
 	function onError(evt) 
@@ -44,10 +76,11 @@
 	{ 
 		var pre = document.createElement("p"); 
 		pre.style.wordWrap = "break-word"; 
-		pre.innerHTML = message; output.appendChild(pre); 
+		pre.innerHTML = message; 
+		output.appendChild(pre); 
 	}  
 	window.addEventListener("load", init, false);
-	window.setInterval(function () {doSend((new Date()).toString());}, 1000);
+	/*window.setInterval(function () {doSend((new Date()).toString());}, 1000);*/
 	</script>  
 <h2>WebSocket Test</h2>  
 <div id="output"></div>  
