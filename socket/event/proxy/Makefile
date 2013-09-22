@@ -6,15 +6,13 @@ INSTALL = /usr/bin/install
 SERVER = customerlive_tcp_server
 SCRIPTS = scripts/customerlive scripts/customerlive_env
 
-TARGETS = $(SERVER) client
-OBJS = src/server.o src/client.o dep/evthr/evthr.o dep/sha1.o dep/http_parser.o dep/base64_enc.o
+TARGETS = $(SERVER)
+OBJS = src/server.o dep/evthr/evthr.o dep/sha1.o dep/http_parser.o dep/base64_enc.o
 
 all: $(TARGETS)
 
-$(SERVER): src/server.o dep/evthr/evthr.o dep/http_parser.o dep/sha1.o dep/base64_enc.o
+$(SERVER): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^
-client: src/client.o
-	$(CC) -o $@ $^
 
 clean:
 	$(RM) $(TARGETS)

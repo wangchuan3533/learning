@@ -65,7 +65,7 @@ int main()
             printf("yes");
         }
         */
-        printf(recv_buf);
+        printf("%s\n", recv_buf);
     }
     for (i = 0; i < COUNT; i++) {
         close(fd[i]);
