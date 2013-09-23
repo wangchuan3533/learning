@@ -7,7 +7,7 @@ SERVER = customerlive_tcp_server
 SCRIPTS = scripts/customerlive scripts/customerlive_env
 
 TARGETS = $(SERVER)
-OBJS = src/server.o src/websocket.o src/http.o dep/evthr/evthr.o dep/sha1.o dep/http_parser.o dep/base64_enc.o
+OBJS = src/server.o src/websocket.o src/http.o src/customerlive.o dep/evthr/evthr.o dep/sha1.o dep/http_parser.o dep/base64_enc.o
 
 all: $(TARGETS)
 

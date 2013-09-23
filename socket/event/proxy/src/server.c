@@ -222,6 +222,7 @@ int server_stop(server_t *serv)
     return event_base_loopexit(serv->base, NULL);
 }
 
+#if 0
 /***************TEST*********************/
 int my_on_connect(conn_t *conn)
 {
@@ -299,3 +300,4 @@ int main()
     server_free(serv2);
     return 0;
 }
+#endif

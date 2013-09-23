@@ -20,6 +20,11 @@ typedef struct websocket_frame_head {
     int offset;
 } websocket_frame_head_t;
 
+int parse_frame(struct evbuffer *input, websocket_frame_head_t *head);
+int handshake(http_request_header_t *request, int fd);
+int add_binary_frame_head(struct evbuffer *output);
+int add_text_frame_head(struct evbuffer *output);
+int send_close_frame(int fd);
 
 #endif /* __WEB__SOCKET__H */
 

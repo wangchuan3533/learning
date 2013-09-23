@@ -20,6 +20,7 @@ int parser_header_field_cb(http_parser *p, const char *buf, size_t len);
 int parser_header_value_cb(http_parser *p, const char *buf, size_t len);
 int parser_message_complete_cb(http_parser *p);
 
+int send_http_response(int fd);
 struct evbuffer;
 
 int http_post(const char *url, const char *content, int len, struct evbuffer *output);

@@ -29,7 +29,7 @@ void http_request_header_free(http_request_header_t *header)
         free(header->Sec_WebSocket_Protocol);
 }
 
-int http_response(int fd)
+int send_http_response(int fd)
 {
     const char *response = "HTTP/1.1 200 OK\r\n"
             "Server: WebSocket\r\n"

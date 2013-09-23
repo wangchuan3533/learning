@@ -16,34 +16,31 @@ typedef struct client {
     char *pull_cmd;
     int pull_cmd_len;
 
-    int refcnt;
     pthread_rwlock_t lock;
 
-    /* websocket */
+    /* http header */
+    http_request_header_t *request;
     http_parser parser;
     http_parser_settings parser_settings;
-    http_request_t request;
+
+    /* websocket */
     int handshake;
     int frame_started;
 
-    evthr_t *thr;
-
+    /* hash table handle */
     UT_hash_handle hh;
-
 } client_t;
 client_t *client_new();
 void client_free();
 
-#define ERROR_EXIT do {\
-    fprintf(stderr, "FATAL ERROR at %s:%d\n", __FILE__, __LINE__);\
-    exit(1);\
-} while(0)
 
+int client_on_connect(conn_t *conn);
+int client_on_close(conn_t *conn);
+int client_on_receive(conn_t *conn);
 
-int fprint_time(FILE *fp);
-#define LOG(fmt, args...) do {\
-    fprintf_time(global.fp_Log);\
-    fprintf(global.fp_log, fmt, ##args);\
-} while (0)
+int rpc_on_connect(conn_t *conn);
+int rpc_on_close(conn_t *conn);
+int rpc_on_receive(conn_t *conn);
+
 
 #endif /* __CUSTOMERLIVE__H */
