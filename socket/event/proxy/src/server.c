@@ -258,7 +258,7 @@ int my_on_receive(conn_t *conn)
 
 int main()
 {
-    server_t *serv; 
+    server_t *serv, *serv2; 
 
     evthread_use_pthreads();
 
@@ -270,10 +270,23 @@ int main()
     serv->on_close = my_on_close;
     serv->on_receive = my_on_receive;
     server_start(serv);
+
+    serv2 = server_new();
+    assert(serv2);
+    serv2->port = 54574;
+    serv2->thread_num = 4;
+    serv2->on_connect = my_on_connect;
+    serv2->on_close = my_on_close;
+    serv2->on_receive = my_on_receive;
+    server_start(serv2);
+
+
     while (1) {
         sleep(1);
     }
     server_stop(serv);
     server_free(serv);
+    server_stop(serv2);
+    server_free(serv2);
     return 0;
 }
