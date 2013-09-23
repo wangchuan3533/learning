@@ -1,12 +1,11 @@
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
-#include <unistd.h>
 #include <curl/curl.h>
 #include <event2/buffer.h>
 
-#include "http_parser.h"
 #include "http.h"
 
 http_request_header_t *http_request_header_new()

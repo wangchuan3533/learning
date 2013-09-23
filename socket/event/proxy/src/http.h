@@ -14,6 +14,7 @@ typedef struct http_request_header {
 http_request_header_t *http_request_header_new();
 void http_request_header_free(http_request_header_t *header);
 
+#include "http_parser.h"
 int parser_url_cb(http_parser *p, const char *buf, size_t len);
 int parser_header_field_cb(http_parser *p, const char *buf, size_t len);
 int parser_header_value_cb(http_parser *p, const char *buf, size_t len);
