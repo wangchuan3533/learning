@@ -33,7 +33,7 @@ typedef struct evthr_cmd        evthr_cmd_t;
 typedef struct evthr_pool_slist evthr_pool_slist_t;
 
 struct evthr_cmd {
-    uint8_t  stop;
+    uint8_t  stop : 1;
     void   * args;
     evthr_cb cb;
 } __attribute__ ((packed));
@@ -83,8 +83,7 @@ evthr_dec_backlog(evthr_t * evthr) {
 
 inline int
 evthr_get_backlog(evthr_t * evthr) {
-/*    return __sync_add_and_fetch(&evthr->cur_backlog, 0);*/
-    return evthr->cur_backlog;
+    return __sync_add_and_fetch(&evthr->cur_backlog, 0);
 }
 
 inline void
