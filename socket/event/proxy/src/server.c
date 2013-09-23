@@ -163,6 +163,7 @@ int listen_on(uint16_t port)
 
     listener = socket(AF_INET, SOCK_STREAM, 0);
     evutil_make_socket_nonblocking(listener);
+    evutil_make_listen_socket_reuseable(listener);
 
     if (bind(listener, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
         perror("bind");
