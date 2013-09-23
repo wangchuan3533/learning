@@ -1,0 +1,53 @@
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.121.2.12 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 2006 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 10.0.1.22 (be patient)
+Completed 1000 requests
+Completed 2000 requests
+Completed 3000 requests
+Completed 4000 requests
+Completed 5000 requests
+Completed 6000 requests
+Completed 7000 requests
+Completed 8000 requests
+Completed 9000 requests
+Finished 10000 requests
+
+
+Server Software:        WebSocket
+Server Hostname:        10.0.1.22
+Server Port:            -10962
+
+Document Path:          /
+Document Length:        8 bytes
+
+Concurrency Level:      1000
+Time taken for tests:   0.668315 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1112781 bytes
+HTML transferred:       81672 bytes
+Requests per second:    14963.00 [#/sec] (mean)
+Time per request:       66.831 [ms] (mean)
+Time per request:       0.067 [ms] (mean, across all concurrent requests)
+Transfer rate:          1624.98 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        9   16   3.1     17      30
+Processing:    12   24  27.2     21     249
+Waiting:        3   18  26.2     15     238
+Total:         26   40  28.0     38     267
+
+Percentage of the requests served within a certain time (ms)
+  50%     38
+  66%     39
+  75%     40
+  80%     40
+  90%     43
+  95%     48
+  98%     53
+  99%    249
+ 100%    267 (longest request)
