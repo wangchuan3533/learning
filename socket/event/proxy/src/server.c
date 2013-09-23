@@ -17,6 +17,7 @@
 
 #include "evthr.h"
 #include "server.h"
+#include "http.h"
 
 server_t *server_new()
 {
@@ -52,7 +53,6 @@ void conn_free(conn_t *conn)
     evbuffer_free(conn->input);
     pthread_mutex_destroy(&conn->lock);
     free(conn);
-    printf("conn 0x%lx freed\n", (unsigned long)conn);
 }
 
 #define READ_SIZE 1024
@@ -93,6 +93,7 @@ void readcb(evutil_socket_t fd, short events, void *arg)
     if (evbuffer_get_length(conn->input) && serv->on_receive) {
         ret = serv->on_receive(conn);
         if (ret < 0) {
+            goto closed;
             /* TODO */
         }
     }
@@ -223,17 +224,15 @@ int server_stop(server_t *serv)
 /***************TEST*********************/
 int my_on_connect(conn_t *conn)
 {
-    printf("conn 0x%lx connected\n", (unsigned long)conn);
     return 0;
 }
 
 int my_on_close(conn_t *conn)
 {
-    printf("conn 0x%lx closed\n", (unsigned long)conn);
     return 0;
 }
 
-int my_on_receive(conn_t *conn)
+int my_on_receive_echo(conn_t *conn)
 {
     int ret, length;
     assert(conn);
@@ -256,6 +255,15 @@ int my_on_receive(conn_t *conn)
     return 0;
 }
 
+int my_on_receive_http(conn_t *conn)
+{
+    int ret;
+    assert(conn);
+    ret = http_response(conn->fd);
+    return -1;
+}
+
+
 int main()
 {
     server_t *serv, *serv2; 
@@ -268,16 +276,16 @@ int main()
     serv->thread_num = 4;
     serv->on_connect = my_on_connect;
     serv->on_close = my_on_close;
-    serv->on_receive = my_on_receive;
+    serv->on_receive = my_on_receive_echo;
     server_start(serv);
 
     serv2 = server_new();
     assert(serv2);
     serv2->port = 54574;
-    serv2->thread_num = 4;
+    serv2->thread_num = 16;
     serv2->on_connect = my_on_connect;
     serv2->on_close = my_on_close;
-    serv2->on_receive = my_on_receive;
+    serv2->on_receive = my_on_receive_http;
     server_start(serv2);
 
 
