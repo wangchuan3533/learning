@@ -80,6 +80,7 @@ void client_free(client_t *client)
     }
     http_request_header_free(client->request);
     LOG("free client 0x%lx\n", (unsigned long)client);
+    hash_del(client);
     free(client);
 }
 
