@@ -40,6 +40,7 @@ static struct {
     const char *url;
     client_t *hash;
     FILE *fp_log;
+    FILE *fp_pid;
     pthread_rwlock_t hash_lock;
 } global = {
     54574,
@@ -47,6 +48,7 @@ static struct {
     6,
     2,
     0, 
+    NULL,
     NULL,
     NULL,
     NULL,
@@ -75,12 +77,12 @@ client_t *client_new()
 
 void client_free(client_t *client)
 {
+    hash_del(client);
     if (client->pull_cmd) {
         free(client->pull_cmd);
     }
     http_request_header_free(client->request);
     LOG("free client 0x%lx\n", (unsigned long)client);
-    hash_del(client);
     free(client);
 }
 
@@ -346,6 +348,24 @@ int client_on_receive(conn_t *conn)
     return 0;
 }
 
+int rpc_on_connect(conn_t *conn)
+{
+    return 0;
+}
+
+int rpc_on_close(conn_t *conn)
+{
+    return 0;
+}
+
+int rpc_on_receive(conn_t *conn)
+{
+}
+
+int rpc_pull(const char *id, int fd)
+{
+}
+
 int start()
 {
     server_t *serv; 
@@ -361,6 +381,9 @@ int start()
     serv->on_receive = client_on_receive;
     server_start(serv);
 
+    /* save the pid */
+    if (global.fp_pid)
+        fprintf(global.fp_pid, "%d", getpid());
     while (1) {
         sleep(1);
     }
@@ -434,13 +457,11 @@ int main(int argc, char **argv)
     }
 
     if (pid_file) {
-        fp = fopen(pid_file, "w");
-        if (fp == NULL) {
+        global.fp_pid = fopen(pid_file, "w");
+        if (global.fp_pid == NULL) {
             fprintf(stderr, "fopen: %s", pid_file);
             ERROR_EXIT;
         }
-        fprintf(fp, "%d", getpid());
-        fclose(fp);
     }
 
     /*
