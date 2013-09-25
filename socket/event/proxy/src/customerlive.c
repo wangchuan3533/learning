@@ -206,8 +206,10 @@ int client_handle(client_t *client, uint8_t *buf, int length, struct evbuffer *o
             if (tmp) {
                 if (!strcmp(tmp->work_id, client->work_id)) {
                     send_close_frame(tmp->conn->fd, 5001);
+                    LOG("%s@%s login on another device\n", tmp->work_id, tmp->customer_uin);
                 } else {
                     send_close_frame(tmp->conn->fd, 5002);
+                    LOG("%s ==> %s login switch of %s\n", tmp->work_id, client->work_id, tmp->customer_uin);
                 }
                 pthread_mutex_unlock(&tmp->lock);
             }
@@ -615,5 +617,7 @@ int fprint_time(FILE *fp)
     time(&time_now);
     localtime_r(&time_now, &tm_now);
     asctime_r(&tm_now, str_now);
-    return fprintf(fp, "%s:", str_now);
+    str_now[strlen(str_now) - 1] = '\0';
+    /* remove trailing "\n" */
+    return fprintf(fp, "%s: ", str_now);
 }
