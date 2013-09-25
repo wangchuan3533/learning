@@ -7,6 +7,7 @@ if [ "${PREFIX}_str" == "_str" ]; then
     exit
 fi
 
+ulimit -n 10240
 export LD_LIBRARY_PATH=$PREFIX/lib
 
 server=$PREFIX/bin/customerlive_tcp_server

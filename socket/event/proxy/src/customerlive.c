@@ -159,6 +159,7 @@ int client_handle(client_t *client, uint8_t *buf, int length, struct evbuffer *o
     int ret, post_cmd_len;
     uint8_t type, *cur, *post_cmd, *at;
     client_t *tmp;
+    char str_close_reason[128];
 
     assert(client);
     assert(buf);
@@ -205,10 +206,14 @@ int client_handle(client_t *client, uint8_t *buf, int length, struct evbuffer *o
             pthread_rwlock_unlock(&global.hash_lock);
             if (tmp) {
                 if (!strcmp(tmp->work_id, client->work_id)) {
-                    send_close_frame(tmp->conn->fd, 5001);
+                    sprintf(str_close_reason, "帐号%s@%s已在其他设备登录\n", client->work_id, client->customer_uin);
+                    tmp->close_sponsor = 1;
+                    send_close_frame(tmp->conn->fd, CLOSE_CODE_LOGIN_ON_OTHER_DEVICE, str_close_reason);
                     LOG("%s@%s login on another device\n", tmp->work_id, tmp->customer_uin);
                 } else {
-                    send_close_frame(tmp->conn->fd, 5002);
+                    sprintf(str_close_reason, "帐号%s@%s正在登录\n", client->work_id, client->customer_uin);
+                    tmp->close_sponsor = 1;
+                    send_close_frame(tmp->conn->fd, CLOSE_CODE_LOGIN_WITH_OTHER_ID, str_close_reason);
                     LOG("%s ==> %s login switch of %s\n", tmp->work_id, client->work_id, tmp->customer_uin);
                 }
                 pthread_mutex_unlock(&tmp->lock);
@@ -373,10 +378,16 @@ int client_on_receive(conn_t *conn)
             free(tmp);
             break;
         case OPCODE_CONNECTION_CLOSE:
+            if (client->close_sponsor)
+                return -1;
+            client->close_sponsor = 1;
+            send_close_frame(fd, CLOSE_CODE_NORMAL, NULL);
+            break;
         case OPCODE_PING:
         case OPCODE_PONG:
         default:
-            send_close_frame(fd, 1003);
+            client->close_sponsor = 1;
+            send_close_frame(fd, CLOSE_CODE_NOT_SUPPORT, NULL);
             return -1;
         }
     }

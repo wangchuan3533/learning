@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include <event2/buffer.h>
 #include "sha1.h"
 #include "base64_enc.h"
@@ -63,19 +64,37 @@ int parse_frame(struct evbuffer *input, websocket_frame_head_t *head)
     return 0;
 }
 
-int send_close_frame(int fd, uint16_t code)
+int send_close_frame(int fd, uint16_t code, const char *reason)
 {
-    uint8_t tmp[4];
+    uint8_t tmp[128], offset = 0, len;
+    int ret;
+    if (reason != NULL)
+        len = strlen(reason);
+    else
+        len = 0;
+    assert(len < 123);
     tmp[0] = 0x88;
-    tmp[1] = 0x02;
+    tmp[1] = (2 + len) & 0x7f;
     /* net order close code */
     tmp[2] = (uint8_t)((code >> 8) & 0xff);
     tmp[3] = (uint8_t)(code & 0xff);
+    if (len)
+        memcpy(tmp + 4, reason, len);
 
-    while (write(fd, tmp, sizeof(tmp)) < 0) {
-        if (errno == EAGAIN || errno == EINTR) {
-            usleep(1000);
-            continue;
+    while (1) {
+        ret = write(fd, tmp + offset, len + 4 - offset);
+        if (ret < 0) {
+            if (errno == EAGAIN || errno == EINTR) {
+                usleep(1000);
+                continue;
+            }
+            return -1;
+        } else if (ret == 0) {
+            return -1;
+        } else {
+            offset += ret;
+            if (offset == len + 4)
+                break;
         }
     }
     return 0;

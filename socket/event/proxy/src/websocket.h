@@ -9,6 +9,12 @@
 #define OPCODE_PING                0x9
 #define OPCODE_PONG                0xa
 
+#define CLOSE_CODE_NORMAL 1000
+#define CLOSE_CODE_NOT_SUPPORT 1003
+#define CLOSE_CODE_LOGIN_ON_OTHER_DEVICE 4001
+#define CLOSE_CODE_LOGIN_WITH_OTHER_ID 4002
+
+
 typedef struct websocket_frame_head {
     uint8_t fin;
     uint8_t rsv;
@@ -24,7 +30,7 @@ int parse_frame(struct evbuffer *input, websocket_frame_head_t *head);
 int handshake(http_request_header_t *request, int fd);
 int add_binary_frame_head(struct evbuffer *output);
 int add_text_frame_head(struct evbuffer *output);
-int send_close_frame(int fd, uint16_t code);
+int send_close_frame(int fd, uint16_t code, const char *reason);
 
 #endif /* __WEB__SOCKET__H */
 

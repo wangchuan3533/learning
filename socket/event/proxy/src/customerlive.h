@@ -29,6 +29,7 @@ typedef struct client {
     /* websocket */
     int handshake;
     int frame_started;
+    int close_sponsor;
 
     /* hash table handle */
     UT_hash_handle hh;
