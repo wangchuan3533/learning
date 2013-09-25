@@ -2,7 +2,7 @@
 <meta charset="utf-8" />  
 <title>WebSocket Test</title>  
 <script language="javascript" type="text/javascript">
-	var wsUri = "ws://customerlive/"; 
+	var wsUri = "ws://cl221.life.qq.com//"; 
 	var output;
 	var str_id = "10099@2481399642";
 	var str_pullRequest =  "uin=&skey=&client=customerlive&format=JSON&ip=&cid=&ts=1378814975&method=message.listMessage&args%5Baccount%5D=10099%402481399642&ver=1.0&sig=8e03a84aa5f80a68b66d9d80d59995d2";
@@ -14,6 +14,9 @@
 	var result;
 	var result_str;
 	var result_type;
+    var buff_heartbeat = new ArrayBuffer(1);
+    var heartbeat = new Uint8Array(buff_heartbeat);
+    heartbeat[0] = 0;
 	type[0] = 2;
 	for (i = 0; i < str_id.length; i++) {
 		id[i] = str_id.charCodeAt(i);
@@ -45,7 +48,7 @@
 	}  
 	function onClose(evt) 
 	{ 
-		writeToScreen("DISCONNECTED"); 
+        writeToScreen("Closed" + evt.code); 
 	}  
 	function onMessage(evt) 
 	{
@@ -54,8 +57,12 @@
 		fileReader.onloadend = function() {
 			result = this.result;
 			result_type = new Uint8Array(result, 0, 1);
-			byteArray = new Int8Array(result, 1);
-			result_str = String.fromCharCode.apply(null, byteArray);
+            if (result_type[0] == 0) {
+                result_str = "HEARTBEAT";
+            } else {
+                byteArray = new Int8Array(result, 1);
+                result_str = String.fromCharCode.apply(null, byteArray);
+            }
 			writeToScreen('<span style="color: blue;">RESPONSE: ' + result_str +'</span>'); 
 		};
 		fileReader.readAsArrayBuffer(evt.data);
@@ -80,7 +87,10 @@
 		output.appendChild(pre); 
 	}  
 	window.addEventListener("load", init, false);
-	/*window.setInterval(function () {doSend((new Date()).toString());}, 1000);*/
+    //window.setInterval(function () {doSend(buffer);}, 1000);
+    //window.setInterval(function () {doSend((new Date()).toString());}, 1000);
+    window.setInterval(function () {doSend(buff_heartbeat);}, 50000);
+
 	</script>  
 <h2>WebSocket Test</h2>  
 <div id="output"></div>  

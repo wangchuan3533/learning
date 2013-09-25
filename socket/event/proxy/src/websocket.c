@@ -69,8 +69,8 @@ int send_close_frame(int fd, uint16_t code)
     tmp[0] = 0x88;
     tmp[1] = 0x02;
     /* net order close code */
-    tmp[2] = (uint8_t)((code >> 8) && 0xff);
-    tmp[3] = (uint8_t)(code && 0xff);
+    tmp[2] = (uint8_t)((code >> 8) & 0xff);
+    tmp[3] = (uint8_t)(code & 0xff);
 
     while (write(fd, tmp, sizeof(tmp)) < 0) {
         if (errno == EAGAIN || errno == EINTR) {

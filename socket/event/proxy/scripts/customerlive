@@ -26,7 +26,7 @@ start()
     echo "Starting $servername :"
     $server -c$client_port -r$rpc_port -l$log_file -p$pid_file -t$thread_num -u$url -d
     sleep 1
-    [ ! -s $pid_file ] || echo "$servername failed to start"
+    [ -s $pid_file ] || echo "$servername failed to start"
 }
 
 stop()

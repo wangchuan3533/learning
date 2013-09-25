@@ -393,9 +393,9 @@ int rpc_on_close(conn_t *conn)
 
 void rpc_handle(evthr_t *thr, void *arg, void *shared)
 {
-    const char *at, *id = (const char *)arg;
+    char *at, *id = (char *)arg;
     client_t *tmp;
-    int ret;
+    int ret, locked = 0;
     struct evbuffer *output;
     uint8_t type;
 
@@ -406,18 +406,19 @@ void rpc_handle(evthr_t *thr, void *arg, void *shared)
         LOG("invalid id\n");
         return;
     }
-    at++;
+    *at++ = '\0';
     /* copy out the pull_cmd & fd */
     pthread_rwlock_rdlock(&global.hash_lock);
     HASH_FIND(hh, global.hash, at, 16, tmp);
-    if (tmp && tmp->pull_cmd) {
+    if (tmp && tmp->pull_cmd && !strcmp(id, tmp->work_id)) {
         /* Is this ok? */
+        locked = 1;
         pthread_mutex_lock(&tmp->lock);
     }
     /* release the hash lock as soon as possible */
     pthread_rwlock_unlock(&global.hash_lock);
 
-    if (tmp && tmp->pull_cmd) {
+    if (locked) {
         /* POST */
         output = evbuffer_new();
         assert(output);
@@ -435,6 +436,7 @@ void rpc_handle(evthr_t *thr, void *arg, void *shared)
         assert(ret == 0);
         send_output(output, tmp->conn);
         pthread_mutex_unlock(&tmp->lock);
+        LOG("rpc push to %s\n", id);
     }
 }
 

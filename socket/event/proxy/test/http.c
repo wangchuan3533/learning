@@ -17,11 +17,11 @@ int main()
     char send_buf[BUF_SIZE], recv_buf[BUF_SIZE];
     char request[] = 
         "GET / HTTP/1.1\r\n"
-        "Host: www.google.com\r\n"
-        "Connection: Keep-Alive\r\n\r\n";
+        "Host: cl221.life.qq.com\r\n"
+        "Connection: close\r\n\r\n";
         
 
-    server = gethostbyname("www.google.com");
+    server = gethostbyname("127.0.0.1");
     if (server == NULL) {
         perror("gethostbyname\n");
         exit(1);
@@ -30,7 +30,7 @@ int main()
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = 0;
-    serv_addr.sin_port = htons(80);
+    serv_addr.sin_port = htons(54574);
     memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
 
     for (i = 0; i < COUNT; i++) {
@@ -51,11 +51,11 @@ int main()
     for (i = 0; i < COUNT; i++) {
         memset(send_buf, i % 256, sizeof(send_buf));
         n = send(fd[i], request, sizeof(request), 0);
-        if (n != sizeof(send_buf)) {
+        if (n != sizeof(request)) {
             fprintf(stderr, "ERROR send\n");
         }
         n = recv(fd[i], recv_buf, sizeof(recv_buf), 0);
-        if (n != sizeof(recv_buf)) {
+        if (n <= 0) {
             fprintf(stderr, "ERROR recv\n");
         }
         /*
