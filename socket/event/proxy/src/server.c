@@ -48,6 +48,19 @@ conn_t *conn_new()
     return conn;
 }
 
+void conn_close(conn_t *conn)
+{
+    if (conn->serv->on_close) {
+        conn->serv->on_close(conn);
+    }
+    close(conn->fd);
+
+    if (conn->event) {
+        event_del(conn->event);
+        event_free(conn->event);
+    }
+}
+
 void conn_free(conn_t *conn)
 {
     evbuffer_free(conn->input);
@@ -58,7 +71,7 @@ void conn_free(conn_t *conn)
 #define READ_SIZE 1024
 void readcb(evutil_socket_t fd, short events, void *arg)
 {
-    int ret;
+    int ret, closed = 0;
     conn_t *conn = (conn_t *)arg;
     server_t *serv = conn->serv;
 
@@ -68,7 +81,8 @@ void readcb(evutil_socket_t fd, short events, void *arg)
     /* timeout close */
     if (events & EV_TIMEOUT) {
         /* TODO */
-        goto closed;
+        conn_close(conn);
+        return;
     }
 
     /* read */
@@ -79,9 +93,11 @@ void readcb(evutil_socket_t fd, short events, void *arg)
                 break;
             if (errno == EINTR)
                 continue;
-            goto closed;
+            closed = 1;
+            break;
         } else if (ret == 0) {
-            goto closed;
+            closed = 1;
+            break;
         } else if (ret == READ_SIZE) {
             continue;
         } else {
@@ -93,22 +109,14 @@ void readcb(evutil_socket_t fd, short events, void *arg)
     if (evbuffer_get_length(conn->input) && serv->on_receive) {
         ret = serv->on_receive(conn);
         if (ret < 0) {
-            goto closed;
             /* TODO */
+            closed = 1;
         }
     }
-    return;
-closed:
-    if (conn->serv->on_close) {
-        conn->serv->on_close(conn);
+    if (closed) {
+        conn_close(conn);
+        conn_free(conn);
     }
-    close(fd);
-
-    if (conn->event) {
-        event_del(conn->event);
-        event_free(conn->event);
-    }
-    conn_free(conn);
 }
 
 void dispatch(evthr_t *thr, void *arg, void *shared)

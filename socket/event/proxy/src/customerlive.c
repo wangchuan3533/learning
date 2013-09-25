@@ -25,11 +25,6 @@ int fprint_time(FILE *fp);
     fprintf(_fp_log, fmt, ##args);\
 } while (0)
 
-#define ERROR_EXIT do {\
-    fprintf(stderr, "FATAL ERROR at %s:%d\n", __FILE__, __LINE__);\
-    exit(1);\
-} while(0)
-
 /* global variables */
 static struct {
     int client_port;
@@ -59,7 +54,7 @@ client_t *client_new()
     client_t *client = calloc(1, sizeof(client_t));
     assert(client != NULL);
 
-    if (pthread_rwlock_init(&client->lock, NULL)) {
+    if (pthread_mutex_init(&client->lock, NULL)) {
         free(client);
         return NULL;
     }
@@ -71,18 +66,22 @@ client_t *client_new()
     client->parser_settings.on_header_value = parser_header_value_cb;
     client->parser_settings.on_message_complete = parser_message_complete_cb;
 
+    client->refcnt = 1;
     LOG("new client 0x%lx\n", (unsigned long)client);
     return client;
 }
 
 void client_free(client_t *client)
 {
-    hash_del(client);
+    assert(client);
+    pthread_mutex_lock(&client->lock);
     if (client->pull_cmd) {
         free(client->pull_cmd);
     }
     http_request_header_free(client->request);
+    pthread_mutex_unlock(&client->lock);
     LOG("free client 0x%lx\n", (unsigned long)client);
+    pthread_mutex_destroy(&client->lock);
     free(client);
 }
 
@@ -91,7 +90,7 @@ void hash_del(client_t *client)
     client_t *tmp;
 
     pthread_rwlock_wrlock(&global.hash_lock);
-    HASH_FIND(hh, global.hash, client->id, 32, tmp);
+    HASH_FIND(hh, global.hash, client->customer_uin, 16, tmp);
     if (tmp != NULL && tmp == client) {
         HASH_DELETE(hh, global.hash, client);
     }
@@ -118,6 +117,7 @@ int client_on_connect(conn_t *conn)
     assert(client);
 
     conn->data = client;
+    client->conn = conn;
     return 0;
 }
 
@@ -126,17 +126,20 @@ int client_on_close(conn_t *conn)
     client_t *client = (client_t *)conn->data;
     assert(client);
 
+    hash_del(client);
     client_free(client);
     return 0;
 }
 
-int send_output(struct evbuffer *buffer, int fd)
+int send_output(struct evbuffer *buffer, conn_t *conn)
 {
     int ret;
+    assert(buffer);
+    assert(conn);
     while (1) {
         if (evbuffer_get_length(buffer) == 0)
             return 0;
-        ret = evbuffer_write(buffer, fd);
+        ret = evbuffer_write(buffer, conn->fd);
         if (ret > 0) {
             continue;
         } else if (ret == 0) {
@@ -154,7 +157,7 @@ int send_output(struct evbuffer *buffer, int fd)
 int client_handle(client_t *client, uint8_t *buf, int length, struct evbuffer *output)
 {
     int ret, post_cmd_len;
-    uint8_t type, *cur, *post_cmd;
+    uint8_t type, *cur, *post_cmd, *at;
     client_t *tmp;
 
     assert(client);
@@ -172,18 +175,42 @@ int client_handle(client_t *client, uint8_t *buf, int length, struct evbuffer *o
         break;
     case TYPE_PULL:
         /* package format: [type|id|pull_cmd] */
-        if (client->id[0] == 0) {
-            /* id: 32 bytes */ 
-            memcpy(client->id, cur, 32);
+        if (client->customer_uin[0] == 0) {
+            /* id format: "work_id@customer_uin" 32 bytes */ 
+
+            at = strchr(cur, '@');
+            if (at == NULL) {
+                type = TYPE_ERROR;
+                evbuffer_add_printf(output, "invalid id");
+                break;
+            }
+
+            *at++ = '\0';
+            memcpy(client->work_id, cur, at - cur);
+            memcpy(client->customer_uin, at, 16);
             cur += 32;
 
             /* if not in hash, store it into it */
             pthread_rwlock_wrlock(&global.hash_lock);
+            HASH_REPLACE(hh, global.hash, customer_uin, 16, client, tmp);
+            /*
             HASH_FIND(hh, global.hash, client->id, 32, tmp);
             if (tmp == NULL) {
                 HASH_ADD(hh, global.hash, id, 32, client);
             }
+            */
+            if (tmp) {
+                pthread_mutex_lock(&tmp->lock);
+            }
             pthread_rwlock_unlock(&global.hash_lock);
+            if (tmp) {
+                if (!strcmp(tmp->work_id, client->work_id)) {
+                    send_close_frame(tmp->conn->fd, 5001);
+                } else {
+                    send_close_frame(tmp->conn->fd, 5002);
+                }
+                pthread_mutex_unlock(&tmp->lock);
+            }
 
             /* store the pull_cmd */
             client->pull_cmd_len = length - 32 - 1;
@@ -228,11 +255,9 @@ int client_handle(client_t *client, uint8_t *buf, int length, struct evbuffer *o
     }
 
     /* package head */
-    ret = evbuffer_prepend(output, &type, sizeof(type));
-    assert(ret == 0);
 
-    /* add wesocket frame head */
-    return add_binary_frame_head(output);
+    return evbuffer_prepend(output, &type, sizeof(type));
+
 }
 
 int client_on_receive(conn_t *conn)
@@ -303,9 +328,12 @@ int client_on_receive(conn_t *conn)
             assert(output);
             ret = evbuffer_add(output, tmp, head.length);
             assert(ret == 0);
+            /* add wesocket frame head */
             ret = add_text_frame_head(output);
             assert(ret == 0);
-            ret = send_output(output, fd);
+            pthread_mutex_lock(&client->lock);
+            ret = send_output(output, conn);
+            pthread_mutex_unlock(&client->lock);
             if (ret < 0) {
                 evbuffer_free(output);
                 free(tmp);
@@ -328,7 +356,12 @@ int client_on_receive(conn_t *conn)
             assert(output);
             ret = client_handle(client, tmp, head.length, output);
             assert(ret == 0);
-            ret = send_output(output, fd);
+            /* add wesocket frame head */
+            ret = add_binary_frame_head(output);
+            assert(ret == 0);
+            pthread_mutex_lock(&client->lock);
+            ret = send_output(output, conn);
+            pthread_mutex_unlock(&client->lock);
             if (ret < 0) {
                 evbuffer_free(output);
                 free(tmp);
@@ -341,7 +374,7 @@ int client_on_receive(conn_t *conn)
         case OPCODE_PING:
         case OPCODE_PONG:
         default:
-            send_close_frame(fd);
+            send_close_frame(fd, 1003);
             return -1;
         }
     }
@@ -358,17 +391,93 @@ int rpc_on_close(conn_t *conn)
     return 0;
 }
 
-int rpc_on_receive(conn_t *conn)
+void rpc_handle(evthr_t *thr, void *arg, void *shared)
 {
+    const char *at, *id = (const char *)arg;
+    client_t *tmp;
+    int ret;
+    struct evbuffer *output;
+    uint8_t type;
+
+    assert(id);
+
+    at = strchr(id, '@');
+    if (at == NULL) {
+        LOG("invalid id\n");
+        return;
+    }
+    at++;
+    /* copy out the pull_cmd & fd */
+    pthread_rwlock_rdlock(&global.hash_lock);
+    HASH_FIND(hh, global.hash, at, 16, tmp);
+    if (tmp && tmp->pull_cmd) {
+        /* Is this ok? */
+        pthread_mutex_lock(&tmp->lock);
+    }
+    /* release the hash lock as soon as possible */
+    pthread_rwlock_unlock(&global.hash_lock);
+
+    if (tmp && tmp->pull_cmd) {
+        /* POST */
+        output = evbuffer_new();
+        assert(output);
+        ret = http_post(global.url, tmp->pull_cmd, tmp->pull_cmd_len, output);
+        if (ret < 0) {
+            evbuffer_drain(output, evbuffer_get_length(output));
+            type = TYPE_ERROR;
+            evbuffer_add_printf(output, "http error");
+        } else {
+            type = TYPE_PUSH;
+        }
+        ret = evbuffer_prepend(output, &type, sizeof(type));
+        assert(ret == 0);
+        ret = add_binary_frame_head(output);
+        assert(ret == 0);
+        send_output(output, tmp->conn);
+        pthread_mutex_unlock(&tmp->lock);
+    }
 }
 
-int rpc_pull(const char *id, int fd)
+int rpc_on_receive(conn_t *conn)
 {
+    struct evbuffer *input = conn->input;
+    server_t *serv = conn->serv;
+    uint32_t length;
+    char *id;
+    int ret;
+
+    assert(input);
+    assert(serv);
+
+    while (1) {
+        ret = evbuffer_copyout(input, &length, sizeof(length));
+        if (ret != sizeof(length))
+            break;
+        if (length + sizeof(length) <= evbuffer_get_length(input)) {
+
+            ret = evbuffer_drain(input, 3 * sizeof(uint32_t));
+            assert(ret == 0);
+            id = (char *)malloc(32);
+            assert(id);
+            ret = evbuffer_remove(input, id, 32);
+            assert(ret == 32);
+
+            /* add task to pool */
+            ret = evthr_pool_defer(serv->pool, rpc_handle, id);
+            if (ret != EVTHR_RES_OK) {
+                free(id);
+                return -1;
+            }
+        } else {
+            break;
+        }
+    }
+    return 0;
 }
 
 int start()
 {
-    server_t *serv; 
+    server_t *serv, *rpc; 
 
     evthread_use_pthreads();
 
@@ -381,9 +490,29 @@ int start()
     serv->on_receive = client_on_receive;
     server_start(serv);
 
+    rpc = server_new();
+    assert(rpc);
+    rpc->port = 54575;
+    rpc->thread_num = 4;
+    rpc->on_connect = rpc_on_connect;
+    rpc->on_close = rpc_on_close;
+    rpc->on_receive = rpc_on_receive;
+    server_start(rpc);
+
+
     /* save the pid */
-    if (global.fp_pid)
+    if (global.fp_pid) {
         fprintf(global.fp_pid, "%d", getpid());
+        fclose(global.fp_pid);
+    }
+
+    /* close stdin, stdout, stderr if in daemon */
+    if (global.daemon_mode) {
+        fclose(stdin);
+        fclose(stdout);
+        fclose(stderr);
+    }
+
     while (1) {
         sleep(1);
     }
@@ -394,7 +523,6 @@ int start()
 
 int main(int argc, char **argv)
 {
-    FILE *fp;
     int opt;
     const char *pid_file = NULL, *log_file = NULL, *opts_short = "c:r:l:p:t:u:dh";
     struct option opts_long[] = {
@@ -443,15 +571,15 @@ int main(int argc, char **argv)
 
     /* run as daemon */
     if (global.daemon_mode) {
-        /* redirect the std* file later */
-        daemon(0, 0);
+        /* do not close the std* files now*/
+        daemon(0, 1);
     }
 
     if (log_file) {
         global.fp_log = fopen(log_file, "a+");
         if (global.fp_log == NULL) {
             fprintf(stderr, "fopen");
-            ERROR_EXIT;
+            exit(1);
         }
         setvbuf(global.fp_log, NULL, _IONBF, 0);
     }
@@ -460,7 +588,7 @@ int main(int argc, char **argv)
         global.fp_pid = fopen(pid_file, "w");
         if (global.fp_pid == NULL) {
             fprintf(stderr, "fopen: %s", pid_file);
-            ERROR_EXIT;
+            exit(1);
         }
     }
 

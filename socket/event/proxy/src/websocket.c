@@ -63,11 +63,15 @@ int parse_frame(struct evbuffer *input, websocket_frame_head_t *head)
     return 0;
 }
 
-int send_close_frame(int fd)
+int send_close_frame(int fd, uint16_t code)
 {
-    uint8_t tmp[2];
+    uint8_t tmp[4];
     tmp[0] = 0x88;
-    tmp[1] = 0x00;
+    tmp[1] = 0x02;
+    /* net order close code */
+    tmp[2] = (uint8_t)((code >> 8) && 0xff);
+    tmp[3] = (uint8_t)(code && 0xff);
+
     while (write(fd, tmp, sizeof(tmp)) < 0) {
         if (errno == EAGAIN || errno == EINTR) {
             usleep(1000);

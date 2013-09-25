@@ -12,11 +12,14 @@
 
 /* client */
 typedef struct client {
-    char id[32];
+    char work_id[16];
+    char customer_uin[16];
     char *pull_cmd;
     int pull_cmd_len;
 
-    pthread_rwlock_t lock;
+    conn_t *conn;
+    int refcnt;
+    pthread_mutex_t lock;
 
     /* http header */
     http_request_header_t *request;
