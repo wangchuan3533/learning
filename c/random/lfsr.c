@@ -13,7 +13,7 @@ int main(void)
         card_no = 10000000 - lfsr;
 
         //printf("bit=%d, lfsr=%d, period=%d\n", bit, lfsr, period);
-        printf("%u\n", lfsr);
+        printf("%u\n", card_no);
     }
     while (lfsr != 0x1234 && period < 1000000);
 
