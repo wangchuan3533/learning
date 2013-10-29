@@ -39,7 +39,8 @@ if (!$my_string) {
 $unpacked = unpack('Voffset/Vend/Vcount', $my_string);
 $unpacked['offset'] = next_no($unpacked['offset']);
 $unpacked['count']++;
-echo "$unpacked[offset]\n";
+$out = 10000000 - $unpacked['offset'];
+echo "$out\n";
 $_next = pack("V3", $unpacked['offset'], $unpacked['end'], $unpacked['count']);
 $shm_bytes_written = shmop_write($shm_id, $_next, 0);
 
