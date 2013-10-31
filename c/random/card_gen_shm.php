@@ -37,10 +37,14 @@ if (!$my_string) {
         echo "Couldn't read from shared memory block\n";
 }
 $unpacked = unpack('Voffset/Vend/Vcount', $my_string);
-$unpacked['offset'] = next_no($unpacked['offset']);
-$unpacked['count']++;
-$out = 10000000 - $unpacked['offset'];
-echo "$out\n";
+if (count($argv) > 1 && ($num = (int)$argv[1])) {
+
+    for (;$num > 0;$num--) {
+        $unpacked['offset'] = next_no($unpacked['offset']);
+        $unpacked['count']++;
+        $out[] = 10000000 - $unpacked['offset'];
+    }
+}
 $_next = pack("V3", $unpacked['offset'], $unpacked['end'], $unpacked['count']);
 $shm_bytes_written = shmop_write($shm_id, $_next, 0);
 
@@ -50,7 +54,6 @@ if (count($argv) > 1 && $argv[1] === 'delete') {
             echo "Couldn't mark shared memory block for deletion.";
     }
 }
-
+var_dump($out);
 shmop_close($shm_id);
-   
 ?>
