@@ -1,0 +1,5 @@
+mkdir -p ./results
+for x in {a..z}
+do
+    php lfsr_test.php >> "results/${x}.result" &
+done
