@@ -1,0 +1,1 @@
+./configure --prefix=/usr/local.php --enable-fpm --with-mssql=/usr/local/mysql --enable-pcntl --enable-soap --enable-shmop --enable-sockets
