@@ -1,0 +1,9 @@
+# netcat
+# Example (memcache) :
+#    Command:
+#        echo "get foo" | nc -q1 localhost 11211
+#
+#    Result:
+#        VALUE foo 0 5
+#        hello
+#        END
