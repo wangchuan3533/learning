@@ -1,3 +1,9 @@
+#!/usr/bin/env bash
+
+# 初始化
+php lfsr_test.php init
+
+# 开启26个进程测试
 mkdir -p ./results
 for x in {a..z}
 do
