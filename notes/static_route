@@ -1,0 +1,8 @@
+#!/bin/sh
+ETH0_GATEWAY=10.22.254.129
+WLAN0_GATEWAY=192.168.111.1
+cd /home/wangchuan/data/github/bestroutetb
+./generate.sh route_table > analysis_result
+awk '{print $1, "add -net", $2, "netmask", $3, $4}' route_table | sed -e "s/vpn_gateway/gw $WLAN0_GATEWAY/" -e "s/net_gateway/gw $ETH0_GATEWAY/" -e '1i#!/bin/sh' > route_up
+sed 's/add/del/' route_up > route_down
+chmod +x route_up route_down
