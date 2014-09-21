@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+#include <assert.h>
 
 #include "uthash.h"
 #include "base64_enc.h"
@@ -32,7 +33,7 @@
 #define HTTP_HEADER_UPGRADE "Upgrade:"
 #define HTTP_HEADER_SEC_WEBSOCKET_KEY "Sec-WebSocket-Key:"
 #define HTTP_HEADER_SEC_WEBSOCKET_PROTOCOL "Sec-WebSocket-Protocol:"
-#define HTTP_HEADER_SEC_WEBSOCKET_VERSION "Sec-WebSocket-Verion:"
+#define HTTP_HEADER_SEC_WEBSOCKET_VERSION "Sec-WebSocket-Version:"
 
 typedef enum http_headers_state_s {
     HTTP_HEADERS_STATE_STEP_0 = 0,
@@ -63,6 +64,81 @@ typedef struct http_headers_s {
     http_headers_state_t state;
 } http_headers_t;
 
+typedef enum frame_state_e {
+    FRAME_STATE_STEP_0 = 0,
+    FRAME_STATE_STEP_1,
+    FRAME_STATE_STEP_2,
+    FRAME_STATE_STEP_3,
+    FRAME_STATE_FINISHED
+} frame_state_t;
+
+#define MAX_websocket_frame_LENGTH 14 //(2 + 8 + 4)
+typedef struct websocket_frame_s {
+    //first byte
+    unsigned fin:1;
+    unsigned rsv1:1;   // must be 0
+    unsigned rsv2:1;   // must be 0
+    unsigned rsv3:1;   // must be 0
+    unsigned opcode:4; // 
+
+    // second type
+    unsigned mask:1;
+    unsigned len_7:7;
+    uint16_t len_16;
+    uint64_t len_64;
+    uint64_t length;
+
+    // mask
+    uint8_t mask_key[4];
+
+    // state
+    frame_state_t state;
+
+    // data;
+    uint8_t *data;
+    uint64_t cur;
+
+} websocket_frame_t;
+
+typedef struct client_s client_t;
+// server context
+typedef struct server_ctx_s {
+    // hash of clients
+    client_t *client_list;
+    // count of clients
+    unsigned int client_count;
+    // event base
+    struct event_base *base;
+} server_ctx_t;
+
+// client states
+typedef enum client_state_e {
+    CLIENT_STATE_ACCEPTED = 0,
+    CLIENT_STATE_HTTP_PARSE_STARTED,
+    CLIENT_STATE_HTTP_PARSE_FINISHED,
+    CLIENT_STATE_HANDSHAKE_STARTED,
+    CLIENT_STATE_HANDSHAKE_FINISHED,
+    CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED,
+    CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED,
+    CLIENT_STATE_HTTP_RESPONSE_FINISHED,
+    CLIENT_STATE_ERROR_OCCURD
+} client_state;
+
+struct client_s {
+    uint64_t client_id;
+    struct bufferevent *bev;
+    // http headers
+    http_headers_t *headers;
+    // websocket frame
+    websocket_frame_t *frame;
+    // client state
+    client_state state;
+    // hash handle
+    UT_hash_handle hh;
+    // context
+    server_ctx_t *ctx;
+};
+
 http_headers_t *http_headers_create()
 {
     http_headers_t *h = (http_headers_t *)malloc(sizeof(http_headers_t));
@@ -86,10 +162,13 @@ void http_headers_destroy(http_headers_t **h)
     }
 }
 
-int http_parse(struct evbuffer *b, http_headers_t *h)
+// TODO filter invalid request
+int parse_http(client_t *c)
 {
     char *line, *tmp;
     size_t n, len;
+    struct evbuffer *b = bufferevent_get_input(c->bev);
+    http_headers_t *h = c->headers;
     while (line = evbuffer_readln(b, &n, EVBUFFER_EOL_CRLF)) {
         h->buffers[h->count++] = line;
         if (n == 0) {
@@ -188,41 +267,6 @@ void print_http_headers(http_headers_t *h)
         printf("[sec_websocket_version]:NULL\n");
 }
 
-typedef enum frame_state_e {
-    FRAME_STATE_STEP_0 = 0,
-    FRAME_STATE_STEP_1,
-    FRAME_STATE_STEP_2,
-    FRAME_STATE_STEP_3,
-    FRAME_STATE_FINISHED
-} frame_state_t;
-
-#define MAX_websocket_frame_LENGTH 14 //(2 + 8 + 4)
-typedef struct websocket_frame_s {
-    //first byte
-    unsigned fin:1;
-    unsigned rsv1:1;   // must be 0
-    unsigned rsv2:1;   // must be 0
-    unsigned rsv3:1;   // must be 0
-    unsigned opcode:4; // 
-
-    // second type
-    unsigned mask:1;
-    unsigned len_7:7;
-    uint16_t len_16;
-    uint64_t len_64;
-    uint64_t length;
-
-    // mask
-    uint8_t mask_key[4];
-
-    // state
-    frame_state_t state;
-
-    // data;
-    uint8_t *data;
-    uint64_t cur;
-
-} websocket_frame_t;
 
 websocket_frame_t *ws_frame_create()
 {
@@ -245,12 +289,26 @@ void ws_frame_destroy(websocket_frame_t **f)
     }
 }
 
-int parse_frame(struct evbuffer *b, websocket_frame_t *h)
+void ws_frame_clear(websocket_frame_t *f)
+{
+    if (f) {
+        if (f->data) {
+            free(f->data);
+        }
+        memset(f, 0, sizeof(websocket_frame_t));
+    }
+}
+
+int parse_frame(client_t *c)
 {
     uint8_t buf[MAX_websocket_frame_LENGTH];
     size_t to_be_read, n, len;
+    struct evbuffer *b = bufferevent_get_input(c->bev);
+    websocket_frame_t *f = c->frame;
+    int i;
+
     len = evbuffer_get_length(b);
-    switch (h->state) {
+    switch (f->state) {
     case FRAME_STATE_STEP_0:
         to_be_read = 2;
         if (len >= to_be_read) {
@@ -259,22 +317,22 @@ int parse_frame(struct evbuffer *b, websocket_frame_t *h)
                 err_quit("evbuffer_remove step 0");
             }
             // fist byte
-            h->fin = (buf[0] >> 7) & 0x1;
-            h->rsv1 = (buf[0] >> 6) & 0x1;
-            h->rsv2 = (buf[0] >> 5) & 0x1;
-            h->rsv3 = (buf[0] >> 4) & 0x1;
-            h->opcode = buf[0] & 0xff;
+            f->fin = (buf[0] >> 7) & 0x1;
+            f->rsv1 = (buf[0] >> 6) & 0x1;
+            f->rsv2 = (buf[0] >> 5) & 0x1;
+            f->rsv3 = (buf[0] >> 4) & 0x1;
+            f->opcode = buf[0] & 0xff;
 
             // second byte
-            h->mask = (buf[1] >> 7) & 0x1;
-            h->len_7 = buf[1] & 0x7f;
-            h->state = FRAME_STATE_STEP_1;
+            f->mask = (buf[1] >> 7) & 0x1;
+            f->len_7 = buf[1] & 0x7f;
+            f->state = FRAME_STATE_STEP_1;
             len -= to_be_read;
         } else {
             return 0;
         }
     case FRAME_STATE_STEP_1:
-        switch (h->len_7) {
+        switch (f->len_7) {
         case 127:
             to_be_read = 8;
             break;
@@ -289,56 +347,59 @@ int parse_frame(struct evbuffer *b, websocket_frame_t *h)
                 n = evbuffer_remove(b, buf, to_be_read);
                 switch (n) {
                 case 2:
-                    h->len_16 = ntohs(*(uint16_t *)buf);
-                    h->length = h->len_16;
+                    f->len_16 = ntohs(*(uint16_t *)buf);
+                    f->length = f->len_16;
                     break;
                 case 8:
-                    h->len_64 = buf[0];
-                    h->len_64 = h->len_64 << 8 + buf[1];
-                    h->len_64 = h->len_64 << 8 + buf[2];
-                    h->len_64 = h->len_64 << 8 + buf[3];
-                    h->len_64 = h->len_64 << 8 + buf[4];
-                    h->len_64 = h->len_64 << 8 + buf[5];
-                    h->len_64 = h->len_64 << 8 + buf[6];
-                    h->len_64 = h->len_64 << 8 + buf[7];
-                    h->length = h->len_64;
+                    f->len_64 = buf[0];
+                    f->len_64 = f->len_64 << 8 + buf[1];
+                    f->len_64 = f->len_64 << 8 + buf[2];
+                    f->len_64 = f->len_64 << 8 + buf[3];
+                    f->len_64 = f->len_64 << 8 + buf[4];
+                    f->len_64 = f->len_64 << 8 + buf[5];
+                    f->len_64 = f->len_64 << 8 + buf[6];
+                    f->len_64 = f->len_64 << 8 + buf[7];
+                    f->length = f->len_64;
                     break;
                 default:
-                    err_quit("evbuffer_remove step 1");
+                    err_quit("Oops evbuffer_remove step 1");
                 }
             } else {
-                h->length = h->len_7;
+                f->length = f->len_7;
             }
             len -= to_be_read;
-            h->state = FRAME_STATE_STEP_2;
+            f->state = FRAME_STATE_STEP_2;
         } else {
             return 0;
         }
     case FRAME_STATE_STEP_2:
-        to_be_read = h->mask ? 4 : 0;
+        to_be_read = f->mask ? 4 : 0;
         if (len > to_be_read) {
             if (to_be_read) {
                 n = evbuffer_remove(b, buf, to_be_read);
                 if (n != to_be_read) {
                     err_quit("evbuffer_remove step 2");
                 }
-                memcpy(h->mask_key, buf, to_be_read);
+                memcpy(f->mask_key, buf, to_be_read);
             }
             len -= to_be_read;
-            h->state = FRAME_STATE_STEP_3;
-            h->data = (uint8_t *)malloc((size_t)h->length);
-            if (NULL == h->data) {
+            f->state = FRAME_STATE_STEP_3;
+            f->data = (uint8_t *)malloc((size_t)f->length);
+            if (NULL == f->data) {
                 err_quit("malloc");
             }
-            h->cur = 0;
+            f->cur = 0;
         } else {
             return 0;
         }
     case FRAME_STATE_STEP_3:
-        n = evbuffer_remove(b, h->data + h->cur, len);
-        h->cur += n;
-        if (h->cur == h->length) {
-            h->state = FRAME_STATE_FINISHED;
+        n = evbuffer_remove(b, f->data + f->cur, len);
+        f->cur += n;
+        if (f->cur == f->length) {
+            for (i = 0; i < f->cur; i++) {
+                f->data[i] ^= f->mask_key[i % 4];
+            }
+            f->state = FRAME_STATE_FINISHED;
         }
         return 0;
     default:
@@ -346,40 +407,6 @@ int parse_frame(struct evbuffer *b, websocket_frame_t *h)
     }
 }
 
-typedef struct client_s client_t;
-// server context
-typedef struct server_ctx_s {
-    // hash of clients
-    client_t *client_list;
-    // count of clients
-    unsigned int client_count;
-    // event base
-    struct event_base *base;
-} server_ctx_t;
-
-// client states
-typedef enum client_state_e {
-    CLIENT_STATE_STEP_0 = 0,
-    CLIENT_STATE_HTTP_FINISHED,
-    CLIENT_STATE_HANDSHAKED,
-    CLIENT_STATE_CLOSED,
-} client_state;
-
-struct client_s {
-    uint64_t client_id;
-    int fd;
-    struct bufferevent *bev;
-    // http headers
-    http_headers_t *headers;
-    // websocket frame
-    websocket_frame_t *frame;
-    // client state
-    client_state state;
-    // hash handle
-    UT_hash_handle hh;
-    // context
-    server_ctx_t *ctx;
-};
 
 server_ctx_t *server_ctx_create()
 {
@@ -434,8 +461,8 @@ void client_destroy(client_t **c)
 {
     if (c && *c) {
         HASH_DELETE(hh, (*c)->ctx->client_list, *c);
-        free((*c)->frame);
-        free((*c)->headers);
+        ws_frame_destroy(&((*c)->frame));
+        http_headers_destroy(&((*c)->headers));
         free(*c);
         *c = NULL;
     }
@@ -445,16 +472,14 @@ int broadcast(server_ctx_t *ctx, void *data, unsigned int len)
 {
 
     client_t *itr = NULL, *tmp = NULL;
-    struct evbuffer *output;
     HASH_ITER(hh, ctx->client_list, itr, tmp) {
         printf("[DEBUG] [print_list] client_id %lu\n", itr->client_id);
-        output = bufferevent_get_output(itr->bev);
-        evbuffer_add(output, data, len);
+        evbuffer_add(bufferevent_get_output(itr->bev), data, len);
     } 
     return 0;
 }
 
-int http_200_ok(struct evbuffer *b)
+int send_200_ok(client_t *c)
 {
     const char *http_200_ok_response = 
         "HTTP/1.1 200 OK\r\n"
@@ -463,78 +488,108 @@ int http_200_ok(struct evbuffer *b)
         "Connection: close\r\n"
         "Content-Type: text/html\r\n\r\n"
         "It Works";
+    size_t len = strlen(http_200_ok_response);
 
-    evbuffer_add(b, http_200_ok_response, strlen(http_200_ok_response));
+    if (evbuffer_add(bufferevent_get_output(c->bev), http_200_ok_response, len) == len) {
+        return 0;
+    }
+    return -1;
+}
+
+int check_websocket_request(http_headers_t *h)
+{
     return 0;
 }
 
-int handshake(client_t *client)
+int send_handshake(client_t *c)
 {
     const char *_websocket_secret = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    const char *handshak_template =
+    const char *handshake_template =
         "HTTP/1.1 101 Switching Protocols\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Accept: %s\r\n"
+        "Sec-WebSocket-Protocol: char\r\n"
         "\r\n";
-    char tmp1[128], tmp2[128], response[1024];
+    char tmp1[256], tmp2[256];
+    size_t len;
+    int ret;
 
-    sprintf("%s%s", tmp1, client->headers->sec_websocket_key, _websocket_secret);
+    snprintf(tmp1, sizeof(tmp1), "%s%s", c->headers->sec_websocket_key, _websocket_secret);
     sha1(tmp2, tmp1, strlen(tmp1) << 3);
     base64enc(tmp1, tmp2, 20);
-    evbuffer_add_printf(handshak_template, tmp1);
-    return 0;
+    ret = evbuffer_add_printf(bufferevent_get_output(c->bev), handshake_template, tmp1);
+    if (ret == strlen(handshake_template) + strlen(tmp1) - 2) {
+        return 0;
+    }
+    return -1;
 }
 
 void readcb(struct bufferevent *bev, void *arg)
 {
-    struct evbuffer *input, *output;
     client_t *client = (client_t *)arg;
+    struct evbuffer *input = bufferevent_get_input(bev);
     char buf[1024];
     size_t n;
     int i, ret;
 
-    input = bufferevent_get_input(bev);
-    output = bufferevent_get_output(bev);
+    assert(bev == client->bev);
     // iterate the clients
 
     while (evbuffer_get_length(input)) {
         switch (client->state) {
-        case CLIENT_STATE_STEP_0:
-            ret = http_parse(input, client->headers);
-            if (ret) {
-                err_quit("http parse");
+        case CLIENT_STATE_ACCEPTED:
+        case CLIENT_STATE_HTTP_PARSE_STARTED:
+            ret = parse_http(client);
+            // http parse error
+            if (ret != 0) {
+                client->state = CLIENT_STATE_ERROR_OCCURD;
+                return;
             }
             if (client->headers->state != HTTP_HEADERS_STATE_FINISHED) {
+                client->state = CLIENT_STATE_HTTP_PARSE_STARTED;
                 break;
             }
-            client->state = CLIENT_STATE_HTTP_FINISHED;
+            client->state = CLIENT_STATE_HTTP_PARSE_FINISHED;
             print_http_headers(client->headers);
             //broadcast(client->ctx, "http", 4);
-        case CLIENT_STATE_HTTP_FINISHED:
-            //http_200_ok(output);
-            handshake(client);
-            client->state = CLIENT_STATE_CLOSED;
+        case CLIENT_STATE_HTTP_PARSE_FINISHED:
+            ret = check_websocket_request(client->headers);
+            // not websocket, send 200 ok, and close socket when finish
+            if (ret == 0) {
+                ret = send_handshake(client);
+                client->state = CLIENT_STATE_HANDSHAKE_STARTED;
+            } else {
+                ret = send_200_ok(client);
+                client->state = CLIENT_STATE_HTTP_RESPONSE_FINISHED;
+            }
+            break;
+        case CLIENT_STATE_HANDSHAKE_STARTED:
+            break;
+        case CLIENT_STATE_HANDSHAKE_FINISHED:
+        case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED:
+        case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED:
+            ret = parse_frame(client);
+            if (ret != 0) {
+                client->state = CLIENT_STATE_ERROR_OCCURD;
+                return;
+            }
+            if (client->frame->state != FRAME_STATE_FINISHED) {
+                client->state = CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED;
+                break;
+            }
             break;
         default:
-            err_quit("client state:[%d]\n", client->state);
+            err_quit("Oops client state:[%d]\n", client->state);
         }
-
-#if 0
-        int n = evbuffer_remove(input, buf, sizeof(buf));
-        // debug print out
-        printf("[%lu]", client->client_id);
-        buf[n] = '\0';
-        printf("%s", buf);
-        broadcast(client->ctx, buf, n);
-#endif
     }
 }
 
 void writecb(struct bufferevent *bev, void *arg)
 {
     client_t *client = (client_t *)arg;
-    if (client->state = CLIENT_STATE_CLOSED) {
+    switch (client->state) {
+        case CLIENT_STATE_ERROR_OCCURD:
         client_destroy(&client);
         bufferevent_free(bev);
     }
@@ -551,6 +606,27 @@ void errorcb(struct bufferevent *bev, short error, void *arg)
         /* ... */
     } else if (error & BEV_EVENT_TIMEOUT) {
         /* must be a timeout event handle, handle it */
+        switch (client->state) {
+        case CLIENT_STATE_ACCEPTED:
+        case CLIENT_STATE_HTTP_PARSE_STARTED:
+        case CLIENT_STATE_HANDSHAKE_FINISHED:
+        case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED:
+            // read timeout -> close in write cb
+            if (error & BEV_EVENT_READING) {
+                break;
+            }
+            return;
+        case CLIENT_STATE_HTTP_PARSE_FINISHED:
+        case CLIENT_STATE_HANDSHAKE_STARTED:
+        case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED:
+            if (error & BEV_EVENT_WRITING) {
+                break;
+            }
+            return;
+        default:
+            err_quit("Opps client's state = %d\n", client->state);
+        }
+            // write time out
         /* ... */
     }
     client_destroy(&client);
@@ -575,8 +651,7 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
 
         evutil_make_socket_nonblocking(fd);
         bev = bufferevent_socket_new(ctx->base, fd, BEV_OPT_CLOSE_ON_FREE);
-        c->fd   = fd;
-        c->bev  = bev;
+        c->bev = bev;
         bufferevent_setcb(bev, readcb, writecb, errorcb, c);
         bufferevent_enable(bev, EV_READ|EV_WRITE);
         // debug
@@ -596,7 +671,7 @@ void run(void)
 
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = 0;
-    sin.sin_port = htons(40713);
+    sin.sin_port = htons(2006);
 
     listener = socket(AF_INET, SOCK_STREAM, 0);
     evutil_make_socket_nonblocking(listener);
