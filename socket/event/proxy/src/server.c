@@ -19,10 +19,13 @@
 #include "server.h"
 #include "http.h"
 
-server_t *server_new()
+server_t *server_create()
 {
-    server_t *serv = calloc(1, sizeof(server_t));
-    assert(serv);
+    server_t *serv = malloc(sizeof(server_t));
+    if (NULL == serv) {
+        fprintf(stderr, "malloc\n");
+        exit(1);
+    }
     return serv;
 }
 
@@ -31,63 +34,66 @@ void server_free(server_t *serv)
     free(serv);
 }
 
-conn_t *conn_new()
+client_t *client_create()
 {
-    conn_t *conn = calloc(1, sizeof(conn_t));
-    assert(conn);
+    client_t *client = malloc(sizeof(client_t));
+    if (NULL == client) {
+        fprintf(stderr, "malloc\n");
+        exit(1);
+    }
 
-    conn->input = evbuffer_new();
-    assert(conn->input);
+    client->input = evbuffer_new();
+    assert(client->input);
 
-    if (pthread_mutex_init(&conn->lock, NULL) < 0) {
-        evbuffer_free(conn->input);
-        free(conn);
+    if (pthread_mutex_init(&client->lock, NULL) < 0) {
+        evbuffer_free(client->input);
+        free(client);
         return NULL;
     }
 
-    return conn;
+    return client;
 }
 
-void conn_close(conn_t *conn)
+void client_close(client_t *client)
 {
-    if (conn->serv->on_close) {
-        conn->serv->on_close(conn);
+    if (client->serv->on_close) {
+        client->serv->on_close(client);
     }
-    close(conn->fd);
+    close(client->fd);
 
-    if (conn->event) {
-        event_del(conn->event);
-        event_free(conn->event);
+    if (client->event) {
+        event_del(client->event);
+        event_free(client->event);
     }
 }
 
-void conn_free(conn_t *conn)
+void client_free(client_t *client)
 {
-    evbuffer_free(conn->input);
-    pthread_mutex_destroy(&conn->lock);
-    free(conn);
+    evbuffer_free(client->input);
+    pthread_mutex_destroy(&client->lock);
+    free(client);
 }
 
 #define READ_SIZE 1024
 void readcb(evutil_socket_t fd, short events, void *arg)
 {
     int ret, closed = 0;
-    conn_t *conn = (conn_t *)arg;
-    server_t *serv = conn->serv;
+    client_t *client = (client_t *)arg;
+    server_t *serv = client->serv;
 
-    assert(conn);
+    assert(client);
     assert(serv);
 
     /* timeout close */
     if (events & EV_TIMEOUT) {
         /* TODO */
-        conn_close(conn);
+        client_close(client);
         return;
     }
 
     /* read */
     while (1) {
-        ret = evbuffer_read(conn->input, fd, READ_SIZE);
+        ret = evbuffer_read(client->input, fd, READ_SIZE);
         if (ret < 0) {
             if (errno == EAGAIN)
                 break;
@@ -106,16 +112,16 @@ void readcb(evutil_socket_t fd, short events, void *arg)
     }
 
     /* call the on_receive cb */
-    if (evbuffer_get_length(conn->input) && serv->on_receive) {
-        ret = serv->on_receive(conn);
+    if (evbuffer_get_length(client->input) && serv->on_receive) {
+        ret = serv->on_receive(client);
         if (ret < 0) {
             /* TODO */
             closed = 1;
         }
     }
     if (closed) {
-        conn_close(conn);
-        conn_free(conn);
+        client_close(client);
+        client_free(client);
     }
 }
 
@@ -125,19 +131,19 @@ void dispatch(evthr_t *thr, void *arg, void *shared)
     server_t *serv = (server_t *)shared;
     struct timeval read_timeout = {1800, 0};
     struct event_base *base = evthr_get_base(thr);
-    conn_t *conn;
+    client_t *client;
 
     evutil_make_socket_nonblocking(fd);
-    conn = conn_new();
-    assert(conn);
-    conn->fd = fd;
-    conn->serv = serv;
-    conn->event = event_new(base, fd, EV_READ | EV_PERSIST | EV_ET, readcb, conn);
-    assert(conn->event);
-    event_add(conn->event, &read_timeout);
+    client = client_create();
+    assert(client);
+    client->fd = fd;
+    client->serv = serv;
+    client->event = event_new(base, fd, EV_READ | EV_PERSIST | EV_ET, readcb, client);
+    assert(client->event);
+    event_add(client->event, &read_timeout);
     
-    if (serv->on_connect) {
-        serv->on_connect(conn);
+    if (serv->on_clientect) {
+        serv->on_clientect(client);
     }
 }
 
@@ -232,24 +238,24 @@ int server_stop(server_t *serv)
 
 #if 0
 /***************TEST*********************/
-int my_on_connect(conn_t *conn)
+int my_on_clientect(client_t *client)
 {
     return 0;
 }
 
-int my_on_close(conn_t *conn)
+int my_on_close(client_t *client)
 {
     return 0;
 }
 
-int my_on_receive_echo(conn_t *conn)
+int my_on_receive_echo(client_t *client)
 {
     int ret, length;
-    assert(conn);
+    assert(client);
     while (1) {
-        if ((length = evbuffer_get_length(conn->input)) == 0)
+        if ((length = evbuffer_get_length(client->input)) == 0)
             break;
-        ret = evbuffer_write(conn->input, conn->fd);
+        ret = evbuffer_write(client->input, client->fd);
         if (ret > 0) {
             continue;
         } else if (ret == 0) {
@@ -265,11 +271,11 @@ int my_on_receive_echo(conn_t *conn)
     return 0;
 }
 
-int my_on_receive_http(conn_t *conn)
+int my_on_receive_http(client_t *client)
 {
     int ret;
-    assert(conn);
-    ret = http_response(conn->fd);
+    assert(client);
+    ret = http_response(client->fd);
     return -1;
 }
 
@@ -280,20 +286,20 @@ int main()
 
     evthread_use_pthreads();
 
-    serv = server_new();
+    serv = server_create();
     assert(serv);
     serv->port = 54573;
     serv->thread_num = 4;
-    serv->on_connect = my_on_connect;
+    serv->on_clientect = my_on_clientect;
     serv->on_close = my_on_close;
     serv->on_receive = my_on_receive_echo;
     server_start(serv);
 
-    serv2 = server_new();
+    serv2 = server_create();
     assert(serv2);
     serv2->port = 54574;
     serv2->thread_num = 16;
-    serv2->on_connect = my_on_connect;
+    serv2->on_clientect = my_on_clientect;
     serv2->on_close = my_on_close;
     serv2->on_receive = my_on_receive_http;
     server_start(serv2);
