@@ -35,6 +35,14 @@
 #define HTTP_HEADER_SEC_WEBSOCKET_PROTOCOL "Sec-WebSocket-Protocol:"
 #define HTTP_HEADER_SEC_WEBSOCKET_VERSION "Sec-WebSocket-Version:"
 
+/* Websocket protocol RFC6455 */
+#define OPCODE_CONTINUATION_FRAME  0x0
+#define OPCODE_TEXT_FRAME          0x1
+#define OPCODE_BINARY_FRAME        0x2
+#define OPCODE_CLOSE_FRAME         0x8
+#define OPCODE_PING                0x9
+#define OPCODE_PONG                0xa
+
 typedef enum http_headers_state_s {
     HTTP_HEADERS_STATE_STEP_0 = 0,
     HTTP_HEADERS_STATE_PARSED_REQUEST_LINE,
@@ -72,7 +80,7 @@ typedef enum frame_state_e {
     FRAME_STATE_FINISHED
 } frame_state_t;
 
-#define MAX_websocket_frame_LENGTH 14 //(2 + 8 + 4)
+#define MAX_WEBSOCKET_HEADER_LENGTH 14 //(2 + 8 + 4)
 typedef struct websocket_frame_s {
     //first byte
     unsigned fin:1;
@@ -120,7 +128,7 @@ typedef enum client_state_e {
     CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED,
     CLIENT_STATE_WEBSOCKET_RESPONSE_STARTED,
     CLIENT_STATE_HTTP_RESPONSE_STATED,
-    CLIENT_STATE_ERROR_OCCURD
+    CLIENT_STATE_ERROR_OCCURED
 } client_state;
 
 struct client_s {
@@ -266,6 +274,11 @@ void print_http_headers(http_headers_t *h)
         printf("[sec_websocket_version]:NULL\n");
 }
 
+void print_frame(websocket_frame_t *f)
+{
+
+}
+
 
 websocket_frame_t *ws_frame_create()
 {
@@ -300,7 +313,7 @@ void ws_frame_clear(websocket_frame_t *f)
 
 int parse_frame(client_t *c)
 {
-    uint8_t buf[MAX_websocket_frame_LENGTH];
+    uint8_t buf[MAX_WEBSOCKET_HEADER_LENGTH];
     size_t to_be_read, n, len;
     struct evbuffer *b = bufferevent_get_input(c->bev);
     websocket_frame_t *f = c->frame;
@@ -320,7 +333,7 @@ int parse_frame(client_t *c)
             f->rsv1 = (buf[0] >> 6) & 0x1;
             f->rsv2 = (buf[0] >> 5) & 0x1;
             f->rsv3 = (buf[0] >> 4) & 0x1;
-            f->opcode = buf[0] & 0xff;
+            f->opcode = buf[0] & 0xf;
 
             // second byte
             f->mask = (buf[1] >> 7) & 0x1;
@@ -489,14 +502,22 @@ int send_200_ok(client_t *c)
         "It Works";
     size_t len = strlen(http_200_ok_response);
 
-    if (evbuffer_add(bufferevent_get_output(c->bev), http_200_ok_response, len) == len) {
-        return 0;
+    if (evbuffer_add(bufferevent_get_output(c->bev), http_200_ok_response, len) != 0) {
+        return -1;
     }
-    return -1;
+    return 0;
 }
 
 int check_websocket_request(http_headers_t *h)
 {
+    if (strncasecmp(h->method, "GET", strlen("GET")))
+        return -1;
+    if (strncasecmp(h->request_uri, "/chat", strlen("/chat")))
+        return -1;
+    if (strncasecmp(h->connection, "Upgrade", strlen("Upgrade")))
+        return -1;
+    if (!h->sec_websocket_key)
+        return -1;
     return 0;
 }
 
@@ -508,7 +529,6 @@ int send_handshake(client_t *c)
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Accept: %s\r\n"
-        "Sec-WebSocket-Protocol: char\r\n"
         "\r\n";
     char tmp1[256], tmp2[256];
     size_t len;
@@ -518,10 +538,134 @@ int send_handshake(client_t *c)
     sha1(tmp2, tmp1, strlen(tmp1) << 3);
     base64enc(tmp1, tmp2, 20);
     ret = evbuffer_add_printf(bufferevent_get_output(c->bev), handshake_template, tmp1);
-    if (ret == strlen(handshake_template) + strlen(tmp1) - 2) {
-        return 0;
+    //debug
+    printf(handshake_template, tmp1);
+    if (ret != strlen(handshake_template) + strlen(tmp1) - 2) {
+        return -1;
     }
-    return -1;
+    return 0;
+}
+
+int send_frame(client_t *c, websocket_frame_t *f)
+{
+    int ret, cur = 0;
+    uint8_t header[MAX_WEBSOCKET_HEADER_LENGTH];
+    struct evbuffer *output = bufferevent_get_output(c->bev);
+    
+    // length
+    if (f->length < 126) {
+        f->len_7 = f->length;
+    } else if (f->length <= 0xffff) {
+        f->len_7 = 126;
+        f->len_16 = f->length;
+    } else {
+        f->len_7 = 127;
+        f->len_64 = f->length;
+    }
+
+    // first byte
+    header[cur]  = (f->fin << 7)  & 0xff;
+    header[cur] |= (f->rsv1 << 6) & 0xff;
+    header[cur] |= (f->rsv2 << 5) & 0xff;
+    header[cur] |= (f->rsv3 << 4) & 0xff;
+    header[cur] |= (f->opcode)    & 0xff;
+    cur++;
+
+    // second byte
+    header[cur] |= (f->mask << 7) & 0xff;
+    header[cur] |= (f->len_7)     & 0xff;
+    cur++;
+
+    // payload length
+    switch (f->len_7) {
+    case 127:
+        header[cur++] = (f->len_64 >> 56) & 0xff;
+        header[cur++] = (f->len_64 >> 48) & 0xff;
+        header[cur++] = (f->len_64 >> 40) & 0xff;
+        header[cur++] = (f->len_64 >> 32) & 0xff;
+        header[cur++] = (f->len_64 >> 24) & 0xff;
+        header[cur++] = (f->len_64 >> 16) & 0xff;
+        header[cur++] = (f->len_64 >> 8)  & 0xff;
+        header[cur++] = (f->len_64)       & 0xff;
+        break;
+    case 126:
+        header[cur++] = (f->len_16 >> 8)  & 0xff;
+        header[cur++] = (f->len_16)       & 0xff;
+        break;
+    default:
+        break;
+    }
+
+    // mask
+    if (f->mask) {
+        memcpy(header + cur, f->mask_key, 4);
+        cur += 4;
+    }
+
+    ret = evbuffer_add(output, header, cur);
+    if (ret != 0)
+        return -1;
+    ret = evbuffer_add(output, f->data, f->length);
+    if (ret != 0)
+        return -1;
+    return ret;
+}
+
+int send_text_frame(client_t *c, void *data, size_t len)
+{
+    websocket_frame_t f;
+
+    memset(&f, 0, sizeof(f));
+
+    f.fin = 1;
+    f.rsv1 = 0;
+    f.rsv2 = 0;
+    f.rsv3 = 0;
+    f.opcode = OPCODE_TEXT_FRAME;
+
+    f.mask = 0;
+    f.length = len;
+    f.data = data;
+
+    return send_frame(c, &f);
+}
+
+int send_binary_frame(client_t *c, void *data, size_t len)
+{
+    websocket_frame_t f;
+
+    memset(&f, 0, sizeof(f));
+
+    f.fin = 1;
+    f.rsv1 = 0;
+    f.rsv2 = 0;
+    f.rsv3 = 0;
+    f.opcode = OPCODE_BINARY_FRAME;
+
+    f.mask = 0;
+    f.length = len;
+    f.data = data;
+
+    return send_frame(c, &f);
+}
+
+int send_close_frame(client_t *c, void *data, size_t len)
+{
+    websocket_frame_t f;
+
+    memset(&f, 0, sizeof(f));
+
+    f.fin = 1;
+    f.rsv1 = 0;
+    f.rsv2 = 0;
+    f.rsv3 = 0;
+    f.opcode = OPCODE_CLOSE_FRAME;;
+
+    f.mask = 0;
+    f.length = len;
+    f.data = data;
+
+    return send_frame(c, &f);
 }
 
 void readcb(struct bufferevent *bev, void *arg)
@@ -543,7 +687,7 @@ void readcb(struct bufferevent *bev, void *arg)
             ret = parse_http(client);
             // http parse error
             if (ret != 0) {
-                client->state = CLIENT_STATE_ERROR_OCCURD;
+                client->state = CLIENT_STATE_ERROR_OCCURED;
                 return;
             }
             if (client->headers->state != HTTP_HEADERS_STATE_FINISHED) {
@@ -567,11 +711,15 @@ void readcb(struct bufferevent *bev, void *arg)
         case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED:
             ret = parse_frame(client);
             if (ret != 0) {
-                client->state = CLIENT_STATE_ERROR_OCCURD;
+                client->state = CLIENT_STATE_ERROR_OCCURED;
                 return;
             }
             if (client->frame->state == FRAME_STATE_FINISHED) {
                 client->state = CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED;
+                // debug
+                client->state = CLIENT_STATE_WEBSOCKET_RESPONSE_STARTED;
+                ret = send_text_frame(client, client->frame->data, client->frame->length);
+                ws_frame_clear(client->frame);
             }
             // send client's frame to co worker
 
@@ -582,7 +730,7 @@ void readcb(struct bufferevent *bev, void *arg)
             // waiting write to complete, do not read
             break;
         default:
-            err_quit("Oops client state:[%d]\n", client->state);
+            err_quit("Oops read client state:[%d]\n", client->state);
         }
     }
 }
@@ -591,7 +739,9 @@ void writecb(struct bufferevent *bev, void *arg)
 {
     client_t *client = (client_t *)arg;
     switch (client->state) {
-    case CLIENT_STATE_ERROR_OCCURD:
+    case CLIENT_STATE_ACCEPTED:
+        break;
+    case CLIENT_STATE_ERROR_OCCURED:
     case CLIENT_STATE_HTTP_RESPONSE_STATED:
         client_destroy(&client);
         bufferevent_free(bev);
@@ -602,7 +752,6 @@ void writecb(struct bufferevent *bev, void *arg)
     case CLIENT_STATE_WEBSOCKET_RESPONSE_STARTED:
         client->state = CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED;
         break;
-    case CLIENT_STATE_ACCEPTED:
     case CLIENT_STATE_HTTP_PARSE_STARTED:
     case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED:
     case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED:
@@ -688,7 +837,7 @@ void run(void)
 
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = 0;
-    sin.sin_port = htons(2006);
+    sin.sin_port = htons(8200);
 
     listener = socket(AF_INET, SOCK_STREAM, 0);
     evutil_make_socket_nonblocking(listener);
