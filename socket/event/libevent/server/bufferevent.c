@@ -115,12 +115,11 @@ typedef struct server_ctx_s {
 typedef enum client_state_e {
     CLIENT_STATE_ACCEPTED = 0,
     CLIENT_STATE_HTTP_PARSE_STARTED,
-    CLIENT_STATE_HTTP_PARSE_FINISHED,
     CLIENT_STATE_HANDSHAKE_STARTED,
-    CLIENT_STATE_HANDSHAKE_FINISHED,
     CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED,
     CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED,
-    CLIENT_STATE_HTTP_RESPONSE_FINISHED,
+    CLIENT_STATE_WEBSOCKET_RESPONSE_STARTED,
+    CLIENT_STATE_HTTP_RESPONSE_STATED,
     CLIENT_STATE_ERROR_OCCURD
 } client_state;
 
@@ -539,6 +538,7 @@ void readcb(struct bufferevent *bev, void *arg)
     while (evbuffer_get_length(input)) {
         switch (client->state) {
         case CLIENT_STATE_ACCEPTED:
+            client->state = CLIENT_STATE_HTTP_PARSE_STARTED;
         case CLIENT_STATE_HTTP_PARSE_STARTED:
             ret = parse_http(client);
             // http parse error
@@ -547,37 +547,39 @@ void readcb(struct bufferevent *bev, void *arg)
                 return;
             }
             if (client->headers->state != HTTP_HEADERS_STATE_FINISHED) {
-                client->state = CLIENT_STATE_HTTP_PARSE_STARTED;
                 break;
             }
-            client->state = CLIENT_STATE_HTTP_PARSE_FINISHED;
+
+            // parse finished
             print_http_headers(client->headers);
             //broadcast(client->ctx, "http", 4);
-        case CLIENT_STATE_HTTP_PARSE_FINISHED:
+            // check the websocket request
             ret = check_websocket_request(client->headers);
-            // not websocket, send 200 ok, and close socket when finish
             if (ret == 0) {
                 ret = send_handshake(client);
                 client->state = CLIENT_STATE_HANDSHAKE_STARTED;
+            // not websocket, send 200 ok, and close socket when finish
             } else {
                 ret = send_200_ok(client);
-                client->state = CLIENT_STATE_HTTP_RESPONSE_FINISHED;
+                client->state = CLIENT_STATE_HTTP_RESPONSE_STATED;
             }
             break;
-        case CLIENT_STATE_HANDSHAKE_STARTED:
-            break;
-        case CLIENT_STATE_HANDSHAKE_FINISHED:
         case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED:
-        case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED:
             ret = parse_frame(client);
             if (ret != 0) {
                 client->state = CLIENT_STATE_ERROR_OCCURD;
                 return;
             }
-            if (client->frame->state != FRAME_STATE_FINISHED) {
-                client->state = CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED;
-                break;
+            if (client->frame->state == FRAME_STATE_FINISHED) {
+                client->state = CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED;
             }
+            // send client's frame to co worker
+
+            break;
+        case CLIENT_STATE_HANDSHAKE_STARTED:
+        case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED:
+        case CLIENT_STATE_WEBSOCKET_RESPONSE_STARTED:
+            // waiting write to complete, do not read
             break;
         default:
             err_quit("Oops client state:[%d]\n", client->state);
@@ -589,9 +591,22 @@ void writecb(struct bufferevent *bev, void *arg)
 {
     client_t *client = (client_t *)arg;
     switch (client->state) {
-        case CLIENT_STATE_ERROR_OCCURD:
+    case CLIENT_STATE_ERROR_OCCURD:
+    case CLIENT_STATE_HTTP_RESPONSE_STATED:
         client_destroy(&client);
         bufferevent_free(bev);
+        break;
+    case CLIENT_STATE_HANDSHAKE_STARTED:
+        client->state = CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED;
+        break;
+    case CLIENT_STATE_WEBSOCKET_RESPONSE_STARTED:
+        client->state = CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED;
+        break;
+    case CLIENT_STATE_ACCEPTED:
+    case CLIENT_STATE_HTTP_PARSE_STARTED:
+    case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED:
+    case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED:
+        err_quit("Oops, write when client's state = %d\n", client->state);
     }
 }
 
@@ -609,16 +624,15 @@ void errorcb(struct bufferevent *bev, short error, void *arg)
         switch (client->state) {
         case CLIENT_STATE_ACCEPTED:
         case CLIENT_STATE_HTTP_PARSE_STARTED:
-        case CLIENT_STATE_HANDSHAKE_FINISHED:
         case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_STARTED:
             // read timeout -> close in write cb
             if (error & BEV_EVENT_READING) {
                 break;
             }
             return;
-        case CLIENT_STATE_HTTP_PARSE_FINISHED:
         case CLIENT_STATE_HANDSHAKE_STARTED:
         case CLIENT_STATE_WEBSOCKET_FRAME_PARSE_FINISHED:
+        case CLIENT_STATE_WEBSOCKET_RESPONSE_STARTED:
             if (error & BEV_EVENT_WRITING) {
                 break;
             }
@@ -640,6 +654,8 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
     socklen_t slen = sizeof(ss);
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     char buf[128];
+    struct timeval tv_10_seconds = {10, 0};
+
     if (fd < 0) {
         perror("accept");
         //FD_SETSIZE
@@ -654,8 +670,9 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
         c->bev = bev;
         bufferevent_setcb(bev, readcb, writecb, errorcb, c);
         bufferevent_enable(bev, EV_READ|EV_WRITE);
+        bufferevent_set_timeouts(bev, &tv_10_seconds, &tv_10_seconds);
         // debug
-        snprintf(buf, sizeof(buf), "client %lu joined\n", c->client_id);
+        //snprintf(buf, sizeof(buf), "client %lu joined\n", c->client_id);
         //broadcast(ctx, buf, strlen(buf));
     }
 }
