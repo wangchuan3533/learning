@@ -15,24 +15,18 @@ const char *websocket_request =
         "Sec-WebSocket-Version: 13\r\n"
         "\r\n";
 
+
 int main(int argc, char **argv)
 {
     struct sockaddr_in serv_addr;
-    struct hostent *server;
     char buffer[128];
-    int fd, ret, n;
+    int fd, ret, n, addr_len = sizeof serv_addr;
     
-    server = gethostbyname("127.0.0.1");
-    if (server == NULL) {
-        perror("gethostbyname\n");
+    ret = evutil_parse_sockaddr_port("127.0.0.1:8200", &serv_addr, &addr_len);
+    if (ret) {
+        perror("evutil_parse_sockaddr_port");
         exit(1);
     }
-
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = 0;
-    serv_addr.sin_port = htons(2006);
-    memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {

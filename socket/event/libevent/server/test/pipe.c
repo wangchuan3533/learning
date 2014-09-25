@@ -13,6 +13,7 @@
  * @brief 
  *  
  **/
+#include <pthread.h>
 #include <event2/event.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
@@ -24,18 +25,6 @@
     fprintf(stderr, fmt, ##args);\
     exit(1);\
 } while (0)
-
-int set_nonblock(int fd)
-{
-    int val;
-
-    if ((val = fcntl(fd, F_GETFL, 0)) < 0)
-        err_quit("fcntl");
-    val |= O_NONBLOCK;
-    if (fcntl(fd, F_SETFL, val) < 0)
-        err_quit("fcntl");
-    return 0;
-}
 
 
 void readcb(struct bufferevent *bev, void *arg)
@@ -51,42 +40,77 @@ void readcb(struct bufferevent *bev, void *arg)
 
 void writecb(struct bufferevent *bev, void *arg)
 {
-    printf("write\n");
 }
 
-int main(int argc, char **argv)
+void errorcb(struct bufferevent *bev, short error, void *arg)
 {
-    int fd[2];
-    int ret;
+    printf("error\n");
+}
+
+void *dispatcher_loop(void *arg)
+{
     struct event_base *base = NULL;
-    struct bufferevent *bev[2];
-
-    fd[0] = STDIN_FILENO;
-    fd[1] = STDOUT_FILENO;
-
-    ret = set_nonblock(fd[0]);
-    ret = set_nonblock(fd[1]);
+    struct bufferevent *bev = NULL;
+    int fd = (int)arg;
 
     base = event_base_new();
     if (base == NULL) {
         err_quit("event_base_new");
     }
 
-    bev[0] = bufferevent_socket_new(base, fd[0], BEV_OPT_CLOSE_ON_FREE);
-    if (!bev[0]) {
+    bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+    if (!bev) {
         err_quit("bufferevent_socket_new");
     }
+    bufferevent_setcb(bev, readcb, writecb, errorcb, bev);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
 
-    bev[1] = bufferevent_socket_new(base, fd[1], BEV_OPT_CLOSE_ON_FREE);
-    if (!bev[1]) {
-        err_quit("bufferevent_socket_new");
-    }
-
-    bufferevent_setcb(bev[0], readcb, NULL, NULL, bev[1]);
-    bufferevent_enable(bev[0], EV_READ);
-
-    bufferevent_setcb(bev[1], writecb, NULL, NULL, bev[0]);
-    bufferevent_enable(bev[1], EV_WRITE);
     event_base_dispatch(base);
+}
+
+void *worker_loop(void *arg)
+{
+    struct event_base *base = NULL;
+    struct bufferevent *bev = NULL;
+    int fd = (int)arg;
+
+    base = event_base_new();
+    if (base == NULL) {
+        err_quit("event_base_new");
+    }
+
+    bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+    if (!bev) {
+        err_quit("bufferevent_socket_new");
+    }
+    bufferevent_setcb(bev, readcb, writecb, errorcb, bev);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
+
+    event_base_dispatch(base);
+}
+
+
+int main(int argc, char **argv)
+{
+    evutil_socket_t fd[2];
+    int ret;
+    void *status;
+    pthread_t dispatcher, worker;
+
+    ret = pthread_create(&dispatcher, NULL, dispatcher_loop, (void *)fd[0]);
+    if (ret) {
+        err_quit("pthread_create");
+    }
+    ret = pthread_create(&worker, NULL, worker_loop, (void *)fd[1]);
+    if (ret) {
+        err_quit("pthread_create");
+    }
+
+    ret = evutil_socketpair(AF_UNIX, SOCK_STREAM, 0, fd);
+    ret = evutil_make_socket_nonblocking(fd[0]);
+    ret = evutil_make_socket_nonblocking(fd[1]);
+
+    pthread_join(dispatcher, &status);
+    pthread_join(worker, &status);
     return 0;
 }

@@ -914,8 +914,7 @@ void run(void)
     sin.sin_port = htons(8200);
 
     listener = socket(AF_INET, SOCK_STREAM, 0);
-    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
+    evutil_make_listen_socket_reuseable(listener);
     evutil_make_socket_nonblocking(listener);
 
     if (bind(listener, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
@@ -933,10 +932,4 @@ void run(void)
     event_add(listener_event, NULL);
 
     event_base_dispatch(ctx->base);
-}
-
-int main(int argc, char **argv)
-{
-    run();
-    return 0;
 }
