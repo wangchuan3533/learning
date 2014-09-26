@@ -10,6 +10,7 @@
 void dispatcher_timer(int fd, short event, void *arg)
 {
     dispatcher_t *d = (dispatcher_t *)arg;
+    printf("dispatcher timer");
     if (d->stop) {
         event_base_loopexit(d->base, NULL);
     }
@@ -41,9 +42,8 @@ void dispatcher_destroy(dispatcher_t **d)
     *d = NULL;
 }
 
-void *dispatcher_loop(void *arg)
+int dispatcher_init(dispatcher_t *d)
 {
-    dispatcher_t *d = (dispatcher_t *)arg;
     struct event *timer_event, *listener_event;
     struct timeval timeout = {1, 0};
     evutil_socket_t listener;
@@ -58,13 +58,11 @@ void *dispatcher_loop(void *arg)
     evutil_make_socket_nonblocking(listener);
 
     if (bind(listener, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
-        perror("bind");
-        return;
+        err_quit("bind");
     }
 
     if (listen(listener, 128) < 0) {
-        perror("listen");
-        return;
+        err_quit("listen");
     }
 
     listener_event = event_new(d->base, listener, EV_READ|EV_PERSIST, dispatcher_accept, d);
@@ -78,6 +76,12 @@ void *dispatcher_loop(void *arg)
     }
     event_add(timer_event, &timeout);
     event_add(listener_event, NULL);
+
+    // create workers
+}
+
+void *dispatcher_loop(dispatcher_t *d)
+{
     event_base_dispatch(d->base);
 }
 
@@ -104,7 +108,6 @@ void dispatcher_accept(int listener, short event, void *arg)
     socklen_t slen = sizeof(ss);
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     char buf[128];
-    struct timeval timeout = {1000, 0};
 
     if (fd < 0) {
         perror("accept");
@@ -113,17 +116,6 @@ void dispatcher_accept(int listener, short event, void *arg)
         close(fd);
     } else {
         dispatcher_dispatch(d, fd);
-        /*
-        struct bufferevent *bev;
-        client_t *c = client_create(d);
-
-        evutil_make_socket_nonblocking(fd);
-        bev = bufferevent_socket_new(d->base, fd, BEV_OPT_CLOSE_ON_FREE);
-        c->bev = bev;
-        bufferevent_setcb(bev, readcb, writecb, errorcb, c);
-        bufferevent_enable(bev, EV_READ|EV_WRITE);
-        bufferevent_set_timeouts(bev, &timeout, &timeout);
-        */
     }
 }
 

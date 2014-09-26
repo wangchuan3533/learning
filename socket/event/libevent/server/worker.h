@@ -1,7 +1,6 @@
 #ifndef  __WORKER_H_
 #define  __WORKER_H_
 #include "define.h"
-#include "websocket.h"
 
 // client states
 typedef enum client_state_e {
@@ -24,17 +23,22 @@ typedef struct worker_s {
     // hash handle
     UT_hash_handle hh;
 
-    int pipe[2];// TODO
+    pthread_t thread_id;
+    int stop;
+
+    int fd[2];// TODO
 
 } worker_t;
 
+struct websocket_frame_s;
+struct http_headers_s;
 struct client_s {
     uint64_t client_id;
     struct bufferevent *bev;
     // http headers
-    http_headers_t *headers;
+    struct http_headers_s *headers;
     // websocket frame
-    websocket_frame_t *frame;
+    struct websocket_frame_s *frame;
     // client state
     client_state state;
     // hash handle
@@ -46,4 +50,9 @@ struct client_s {
 };
 
 
-#endif  //__WORKER_H_
+worker_t *worker_create();
+void worker_destroy(worker_t **s);
+int broadcast(worker_t *w, void *data, unsigned int len);
+int worker_run(worker_t *w);
+int worker_stop(worker_t *w);
+#endif  //__WORKER_H_;

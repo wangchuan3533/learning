@@ -3,32 +3,40 @@
 #include "worker.h"
 worker_t *worker_create()
 {
-    worker_t *s = (worker_t *)malloc(sizeof(worker_t));
-    if (NULL == s) {
+    worker_t *w = (worker_t *)malloc(sizeof(worker_t));
+    int ret;
+    if (NULL == w) {
         err_quit("malloc");
     }
-    s->client_list = NULL;
-    s->client_count = 0;
-    s->base = event_base_new();
-    if (NULL == s->base) {
+    memset(w, 0, sizeof(worker_t));
+    w->client_list = NULL;
+    w->client_count = 0;
+    w->base = event_base_new();
+    if (NULL == w->base) {
         err_quit("event_base_new");
     }
-    return s;
+
+    ret = evutil_socketpair(AF_UNIX, SOCK_STREAM, 0, w->fd);
+    if (ret < 0) {
+        err_quit("socketpair");
+    }
+
+    return w;
 }
 
-void server_destroy(worker_t **s)
+void worker_destroy(worker_t **w)
 {
     client_t *itr = NULL, *tmp = NULL;
     // destroy event_base
-    if (s && *s) {
+    if (w && *w) {
         // delete hash
-        //HASH_ITER(hh, s->client_list, itr, tmp) {
+        //HASH_ITER(hh, w->client_list, itr, tmp) {
             // delete the client?
         //}
-        //if (NULL != s->base)
-        //event_base_destroy(s->base);
-        free(*s);
-        *s = NULL;
+        //if (NULL != w->base)
+        //event_base_destroy(w->base);
+        free(*w);
+        *w = NULL;
     }
 }
 
@@ -116,7 +124,6 @@ void readcb(struct bufferevent *bev, void *arg)
     size_t n;
     int i, ret;
 
-    assert(bev == client->bev);
     // iterate the clients
 
     while (evbuffer_get_length(input)) {
@@ -230,5 +237,64 @@ void errorcb(struct bufferevent *bev, short error, void *arg)
     bufferevent_free(bev);
 }
 
+void worker_timer(int fd, short event, void *arg)
+{
+    worker_t *w = (worker_t *)arg;
+    printf("worker timer\n");
+    if (w->stop) {
+        event_base_loopexit(w->base, NULL);
+    }
+}
+
+void worker_task(int fd, short event, void *arg)
+{
+    worker_t *w = (worker_t *)arg;
+    struct bufferevent *bev;
+    client_t *c = client_create(w);
+    struct timeval timeout = {1000, 0};
+
+    evutil_make_socket_nonblocking(fd);
+    bev = bufferevent_socket_new(w->base, fd, BEV_OPT_CLOSE_ON_FREE);
+    c->bev = bev;
+    bufferevent_setcb(bev, readcb, writecb, errorcb, c);
+    bufferevent_enable(bev, EV_READ|EV_WRITE);
+    bufferevent_set_timeouts(bev, &timeout, &timeout);
+}
+
+void *worker_loop(void *arg)
+{
+    worker_t *w = (worker_t *)arg;
+    struct event *timer_event, *task_event;
+    struct timeval timeout = {1, 0};
+
+    task_event = event_new(w->base, w->fd[0], EV_READ|EV_PERSIST, worker_task, w);
+    if (NULL == task_event) {
+        err_quit("event_new");
+    }
+
+    timer_event = event_new(w->base, -1, EV_PERSIST, worker_timer, w);
+    if (NULL == timer_event) {
+        err_quit("event_new");
+    }
+    event_add(timer_event, &timeout);
+    event_add(task_event, NULL);
+    event_base_dispatch(w->base);
+}
+
+int worker_run(worker_t *w)
+{
+    int ret;
+    ret = pthread_create(&(w->thread_id), NULL, worker_loop, w);
+    if (ret != 0) {
+        err_quit("pthread_create");
+    }
+    return 0;
+}
+
+int worker_stop(worker_t *w)
+{
+    w->stop = 1;
+    return 0;
+}
 
 
