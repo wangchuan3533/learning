@@ -27,6 +27,7 @@ typedef struct worker_s {
     int stop;
 
     int fd[2];// TODO
+    struct bufferevent *bev;
 
 } worker_t;
 
@@ -53,6 +54,6 @@ struct client_s {
 worker_t *worker_create();
 void worker_destroy(worker_t **s);
 int broadcast(worker_t *w, void *data, unsigned int len);
-int worker_run(worker_t *w);
+int worker_start(worker_t *w);
 int worker_stop(worker_t *w);
 #endif  //__WORKER_H_;

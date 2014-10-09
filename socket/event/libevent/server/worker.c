@@ -69,7 +69,7 @@ void client_destroy(client_t **c)
     }
 }
 
-int broadcast(worker_t *w, void *data, unsigned int len)
+int websocket_broadcast(worker_t *w, void *data, unsigned int len)
 {
 
     client_t *itr = NULL, *tmp = NULL;
@@ -97,7 +97,7 @@ int handle(client_t *c)
         }
         break;
     case OPCODE_TEXT_FRAME:
-        broadcast(c->worker, f->data, f->length);
+        websocket_broadcast(c->worker, f->data, f->length);
         break;
     case OPCODE_PONG_FRAME:
         // TODO
@@ -116,9 +116,9 @@ int handle(client_t *c)
     return 0;
 }
 
-void readcb(struct bufferevent *bev, void *arg)
+void websocket_readcb(struct bufferevent *bev, void *arg)
 {
-    client_t *client = (client_t *)arg;
+    client_t *c = (client_t *)arg;
     struct evbuffer *input = bufferevent_get_input(bev);
     char buf[1024];
     size_t n;
@@ -127,49 +127,49 @@ void readcb(struct bufferevent *bev, void *arg)
     // iterate the clients
 
     while (evbuffer_get_length(input)) {
-        switch (client->state) {
+        switch (c->state) {
         case CLIENT_STATE_ACCEPTED:
-            client->state = CLIENT_STATE_HTTP_PARSE_STARTED;
+            c->state = CLIENT_STATE_HTTP_PARSE_STARTED;
         case CLIENT_STATE_HTTP_PARSE_STARTED:
-            ret = parse_http(bufferevent_get_input(client->bev), client->headers);
+            ret = parse_http(input, c->headers);
             // http parse error
             if (ret != 0) {
                 // TODO error handling
                 return;
             }
-            if (client->headers->state != HTTP_HEADERS_STATE_FINISHED) {
+            if (c->headers->state != HTTP_HEADERS_STATE_FINISHED) {
                 break;
             }
 
             // parse finished
-            print_http_headers(client->headers);
-            //broadcast(client->worker, "http", 4);
+            print_http_headers(c->headers);
+            //broadcast(c->worker, "http", 4);
             // check the websocket request
-            ret = check_websocket_request(client->headers);
+            ret = check_websocket_request(c->headers);
             if (ret == 0) {
-                ret = send_handshake(bufferevent_get_output(client->bev), client->headers->sec_websocket_key);
-                client->state = CLIENT_STATE_HANDSHAKE_STARTED;
+                ret = send_handshake(bufferevent_get_output(c->bev), c->headers->sec_websocket_key);
+                c->state = CLIENT_STATE_HANDSHAKE_STARTED;
             // not websocket, send 200 ok, and close socket when finish
             } else {
-                ret = send_200_ok(bufferevent_get_output(client->bev));
-                client->close_flag = 1;
+                ret = send_200_ok(bufferevent_get_output(c->bev));
+                c->close_flag = 1;
             }
             break;
         case CLIENT_STATE_WEBSOCKET_FRAME_LOOP:
-            ret = parse_frame(bufferevent_get_input(client->bev), client->frame);
+            ret = parse_frame(input, c->frame);
             if (ret != 0) {
                 // TODO error handling
                 return;
             }
-            if (client->frame->state == FRAME_STATE_FINISHED) {
+            if (c->frame->state == FRAME_STATE_FINISHED) {
                 // debug
-                ret = handle(client);
+                ret = handle(c);
                 if (ret) {
                     // TODO error handling
                 }
                 // clear
-                ws_frame_clear(client->frame);
-                client->state = CLIENT_STATE_WEBSOCKET_FRAME_LOOP;
+                ws_frame_clear(c->frame);
+                c->state = CLIENT_STATE_WEBSOCKET_FRAME_LOOP;
             }
             // send client's frame to co worker
 
@@ -178,33 +178,33 @@ void readcb(struct bufferevent *bev, void *arg)
             // waiting write to complete, do not read
             return;
         default:
-            err_quit("Oops read client state:[%d]\n", client->state);
+            err_quit("Oops read client state:[%d]\n", c->state);
         }
     }
 }
 
-void writecb(struct bufferevent *bev, void *arg)
+void websocket_writecb(struct bufferevent *bev, void *arg)
 {
-    client_t *client = (client_t *)arg;
+    client_t *c = (client_t *)arg;
 
-    switch (client->state) {
+    switch (c->state) {
     case CLIENT_STATE_HANDSHAKE_STARTED:
-        client->state = CLIENT_STATE_WEBSOCKET_FRAME_LOOP;
+        c->state = CLIENT_STATE_WEBSOCKET_FRAME_LOOP;
         break;
     case CLIENT_STATE_HTTP_PARSE_STARTED:
     case CLIENT_STATE_WEBSOCKET_FRAME_LOOP:
         break;
     }
 
-    if (client->close_flag) {
-        client_destroy(&client);
+    if (c->close_flag) {
+        client_destroy(&c);
         bufferevent_free(bev);
     }
 }
 
-void errorcb(struct bufferevent *bev, short error, void *arg)
+void websocket_errorcb(struct bufferevent *bev, short error, void *arg)
 {
-    client_t *client = (client_t *)arg;
+    client_t *c = (client_t *)arg;
     if (error & BEV_EVENT_EOF) {
         /* connection has been closed, do any clean up here */
         /* ... */
@@ -213,7 +213,7 @@ void errorcb(struct bufferevent *bev, short error, void *arg)
         /* ... */
     } else if (error & BEV_EVENT_TIMEOUT) {
         /* must be a timeout event handle, handle it */
-        switch (client->state) {
+        switch (c->state) {
         case CLIENT_STATE_ACCEPTED:
         case CLIENT_STATE_HTTP_PARSE_STARTED:
         case CLIENT_STATE_WEBSOCKET_FRAME_LOOP:
@@ -228,60 +228,126 @@ void errorcb(struct bufferevent *bev, short error, void *arg)
             }
             return;
         default:
-            err_quit("Opps client's state = %d\n", client->state);
+            err_quit("Opps client's state = %d\n", c->state);
         }
             // write time out
         /* ... */
     }
-    client_destroy(&client);
+    client_destroy(&c);
     bufferevent_free(bev);
 }
 
 void worker_timer(int fd, short event, void *arg)
 {
     worker_t *w = (worker_t *)arg;
-    printf("worker timer\n");
+    //printf("worker timer\n");
     if (w->stop) {
         event_base_loopexit(w->base, NULL);
     }
 }
 
-void worker_task(int fd, short event, void *arg)
+void echo_readcb(struct bufferevent *bev, void *arg)
+{
+    struct evbuffer *input = bufferevent_get_input(bev);
+    struct evbuffer *output = bufferevent_get_output(bev);
+    client_t *c = (client_t *)arg;
+
+    evbuffer_add_buffer(output, input);
+}
+
+void echo_errorcb(struct bufferevent *bev, short error, void *arg)
+{
+    client_t *c = (client_t *)arg;
+
+    if (error | BEV_EVENT_TIMEOUT) {
+        // TODO
+    } else if (error | BEV_EVENT_ERROR) {
+        // TODO
+    }
+    client_destroy(&c);
+    bufferevent_free(bev);
+}
+
+void broadcast_cb(struct bufferevent *bev, void *arg)
+{
+    client_t *c = (client_t *)arg, *itr = NULL, *tmp = NULL;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    void *data; 
+    size_t len;
+    len = evbuffer_get_length(input);
+    data = malloc(len);
+    if (evbuffer_remove(input, data, len) != len) {
+        err_quit("evbuffer_remove");
+    }
+    HASH_ITER(hh, c->worker->client_list, itr, tmp) {
+        if (evbuffer_add(bufferevent_get_output(itr->bev), data, len) != 0) {
+            err_quit("evbuffer_add");
+        }
+    }
+    free(data);
+}
+void worker_task_readcb(struct bufferevent *bev, void *arg)
 {
     worker_t *w = (worker_t *)arg;
-    struct bufferevent *bev;
-    client_t *c = client_create(w);
+    struct bufferevent *bev_client;
     struct timeval timeout = {1000, 0};
+    struct evbuffer *input = bufferevent_get_input(bev);
+    client_t *c;
+    int fd, n;
 
-    evutil_make_socket_nonblocking(fd);
-    bev = bufferevent_socket_new(w->base, fd, BEV_OPT_CLOSE_ON_FREE);
-    c->bev = bev;
-    bufferevent_setcb(bev, readcb, writecb, errorcb, c);
-    bufferevent_enable(bev, EV_READ|EV_WRITE);
-    bufferevent_set_timeouts(bev, &timeout, &timeout);
+    while (evbuffer_get_length(input) >= sizeof fd) {
+        n = evbuffer_remove(input, &fd, sizeof fd);
+        if (n != sizeof fd) {
+            err_quit("evbuffer_remove");
+        }
+        evutil_make_socket_nonblocking(fd);
+        c = client_create(w);
+        bev_client = bufferevent_socket_new(w->base, fd, BEV_OPT_CLOSE_ON_FREE);
+        if (!bev_client) {
+            err_quit("bufferevent_socket_new");
+        }
+        c->bev = bev_client;
+        bufferevent_setcb(bev_client, broadcast_cb, NULL, echo_errorcb, c);
+        bufferevent_enable(bev_client, EV_READ|EV_WRITE);
+        bufferevent_set_timeouts(bev_client, &timeout, &timeout);
+    }
+}
+
+void worker_task_errorcb(struct bufferevent *bev, short error, void *arg)
+{
+    printf("worker error\n");
+    worker_t *w = (worker_t *)arg;
+    if (error | BEV_EVENT_TIMEOUT) {
+        // TODO
+    } else if (error | BEV_EVENT_ERROR) {
+        // TODO
+    }
+    w->stop = 1;
 }
 
 void *worker_loop(void *arg)
 {
     worker_t *w = (worker_t *)arg;
-    struct event *timer_event, *task_event;
+    struct event *timer_event;
+    struct bufferevent *bev;
     struct timeval timeout = {1, 0};
 
-    task_event = event_new(w->base, w->fd[0], EV_READ|EV_PERSIST, worker_task, w);
-    if (NULL == task_event) {
-        err_quit("event_new");
+    bev = bufferevent_socket_new(w->base, w->fd[0], BEV_OPT_CLOSE_ON_FREE);
+    if (!bev) {
+        err_quit("bufferevent_socket_new");
     }
+    bufferevent_setcb(bev, worker_task_readcb, NULL, worker_task_errorcb, w);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
 
     timer_event = event_new(w->base, -1, EV_PERSIST, worker_timer, w);
     if (NULL == timer_event) {
         err_quit("event_new");
     }
     event_add(timer_event, &timeout);
-    event_add(task_event, NULL);
     event_base_dispatch(w->base);
 }
 
-int worker_run(worker_t *w)
+int worker_start(worker_t *w)
 {
     int ret;
     ret = pthread_create(&(w->thread_id), NULL, worker_loop, w);

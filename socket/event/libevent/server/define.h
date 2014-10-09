@@ -24,4 +24,6 @@
     exit(1);\
 } while (0)
 
+#define WORKER_NUM 4
+
 #endif  //__DEFINE_H_
