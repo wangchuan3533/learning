@@ -59,8 +59,7 @@ int round_robin_dispatch(dispatcher_t *d, int fd)
     c->fd = fd;
     c->worker = cur;
     cmd.cmd_no = CMD_ADD_CLIENT;
-    cmd.data = c;
-    cmd.length = sizeof c;
+    cmd.client = c;
     if (evbuffer_add(bufferevent_get_output(cur->bev_dispatcher[1]), &cmd, sizeof cmd) != 0) {
         err_quit("evbuffer_add");
     }
@@ -135,6 +134,7 @@ int dispatcher_start(dispatcher_t *d)
             err_quit("bufferevent_socket_new");
         }
         bufferevent_setcb(w->bev_dispatcher[1], dispatcher_worker_readcb, dispatcher_worker_writecb, dispatcher_worker_errorcb, w);
+        bufferevent_setwatermark(w->bev_dispatcher[1], EV_READ, sizeof(cmd_t), 0);
         bufferevent_enable(w->bev_dispatcher[1], EV_READ | EV_WRITE);
     }
 

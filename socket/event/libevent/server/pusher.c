@@ -20,9 +20,7 @@ int pusher_broadcast(void *data, size_t length)
 void pusher_timer(int fd, short event, void *arg)
 {
     pusher_t *p = (pusher_t *)arg;
-    char *heartbeat = "heartbeat\n";
 
-    pusher_broadcast(heartbeat, strlen(heartbeat));
     if (p->stop) {
         event_base_loopexit(p->base, NULL);
     }
@@ -62,17 +60,18 @@ void pusher_worker_readcb(struct bufferevent *bev, void *arg)
         switch (cmd.cmd_no) {
         case CMD_ADD_CLIENT:
             printf("client added\n");
-            c = (client_t *)cmd.data;
+            c = cmd.client;
             HASH_ADD(h2, global.clients, client_id, sizeof(c->client_id), c);
             break;
         case CMD_DEL_CLIENT:
             printf("client deleted\n");
-            c = (client_t *)cmd.data;
+            c = cmd.client;
             HASH_DELETE(h2, global.clients, c);
             client_destroy(&c);
             break;
         case CMD_BROADCAST:
             pusher_broadcast(cmd.data, cmd.length);
+            free(cmd.data);
             break;
         default:
             break;
@@ -114,6 +113,7 @@ int pusher_start(pusher_t *p)
             err_quit("bufferevent_socket_new");
         }
         bufferevent_setcb(w->bev_pusher[1], pusher_worker_readcb, pusher_worker_writecb, pusher_worker_errorcb, w);
+        bufferevent_setwatermark(w->bev_pusher[1], EV_READ, sizeof(cmd_t), 0);
         bufferevent_enable(w->bev_pusher[1], EV_READ | EV_WRITE);
     }
 
