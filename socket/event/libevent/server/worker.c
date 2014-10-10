@@ -30,11 +30,10 @@ void worker_destroy(worker_t **w)
     // destroy event_base
     if (w && *w) {
         // delete hash
-        //HASH_ITER(h1, global.clients, itr, tmp) {
+        HASH_ITER(h1, (*w)->clients, itr, tmp) {
             // delete the client?
-        //}
-        //if (NULL != w->base)
-        //event_base_destroy(w->base);
+            HASH_DELETE(h1, (*w)->clients, itr);
+        }
         free(*w);
         *w = NULL;
     }
@@ -115,9 +114,7 @@ void websocket_readcb(struct bufferevent *bev, void *arg)
 {
     client_t *c = (client_t *)arg;
     struct evbuffer *input = bufferevent_get_input(bev);
-    char buf[1024];
-    size_t n;
-    int i, ret;
+    int ret;
 
     // iterate the clients
 
@@ -189,6 +186,8 @@ void websocket_writecb(struct bufferevent *bev, void *arg)
     case CLIENT_STATE_HTTP_PARSE_STARTED:
     case CLIENT_STATE_WEBSOCKET_FRAME_LOOP:
         break;
+    default:
+        break;
     }
 
     if (c->close_flag) {
@@ -245,7 +244,6 @@ void echo_readcb(struct bufferevent *bev, void *arg)
 {
     struct evbuffer *input = bufferevent_get_input(bev);
     struct evbuffer *output = bufferevent_get_output(bev);
-    client_t *c = (client_t *)arg;
 
     evbuffer_add_buffer(output, input);
 }
@@ -260,8 +258,9 @@ void echo_errorcb(struct bufferevent *bev, short error, void *arg)
     } else if (error | BEV_EVENT_ERROR) {
         // TODO
     }
-    //client_destroy(&c);
-    
+    // delete from hash
+    HASH_DELETE(h1, c->worker->clients, c);
+    // notify the pusher
     cmd.cmd_no = CMD_DEL_CLIENT;
     cmd.data = c;
     cmd.length = sizeof c;
@@ -271,9 +270,20 @@ void echo_errorcb(struct bufferevent *bev, short error, void *arg)
     bufferevent_free(bev);
 }
 
-void broadcast_cb(struct bufferevent *bev, void *arg)
+int broadcast(worker_t *w, void *data, size_t length)
 {
-    client_t *c = (client_t *)arg, *itr, *tmp;
+    client_t *itr, *tmp;
+    HASH_ITER(h1, w->clients, itr, tmp) {
+        if (evbuffer_add(bufferevent_get_output(itr->bev), data, length) != 0) {
+            err_quit("evbuffer_add");
+        }
+    }
+    return 0;
+}
+
+void broadcast_inner_cb(struct bufferevent *bev, void *arg)
+{
+    client_t *c = (client_t *)arg;
     struct evbuffer *input = bufferevent_get_input(bev);
     void *data; 
     size_t len;
@@ -282,13 +292,30 @@ void broadcast_cb(struct bufferevent *bev, void *arg)
     if (evbuffer_remove(input, data, len) != len) {
         err_quit("evbuffer_remove");
     }
-    HASH_ITER(h1, global.clients, itr, tmp) {
-        if (c->worker == itr->worker && evbuffer_add(bufferevent_get_output(itr->bev), data, len) != 0) {
-            err_quit("evbuffer_add");
-        }
-    }
+    broadcast(c->worker, data, len);
     free(data);
 }
+
+void broadcast_inter_cb(struct bufferevent *bev, void *arg)
+{
+    client_t *c = (client_t *)arg;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    void *data; 
+    size_t len;
+    cmd_t cmd;
+    len = evbuffer_get_length(input);
+    data = malloc(len);
+    if (evbuffer_remove(input, data, len) != len) {
+        err_quit("evbuffer_remove");
+    }
+    cmd.cmd_no = CMD_BROADCAST;
+    cmd.data = data;
+    cmd.length = len;
+    if (evbuffer_add(bufferevent_get_output(c->worker->bev_pusher[0]), &cmd, sizeof cmd) != 0) {
+        err_quit("evbuffer_add");
+    }
+}
+
 void worker_task_readcb(struct bufferevent *bev, void *arg)
 {
     worker_t *w = (worker_t *)arg;
@@ -311,14 +338,19 @@ void worker_task_readcb(struct bufferevent *bev, void *arg)
             }
             c->bev = bev_client;
             c->client_id = c->fd;
-            bufferevent_setcb(bev_client, echo_readcb, NULL, echo_errorcb, c);
+            //bufferevent_setcb(bev_client, echo_readcb, NULL, echo_errorcb, c);
+            bufferevent_setcb(bev_client, broadcast_inter_cb, NULL, echo_errorcb, c);
             bufferevent_enable(bev_client, EV_READ|EV_WRITE);
             bufferevent_set_timeouts(bev_client, &timeout, &timeout);
 
+            // add to hash
+            HASH_ADD(h1, w->clients, client_id, sizeof(c->client_id), c);
             // pass cmd to pusher
             if (evbuffer_add(bufferevent_get_output(w->bev_pusher[0]), &cmd, sizeof cmd) != 0) {
                 err_quit("evbuffer_add");
             }
+            break;
+        default:
             break;
         }
     }
@@ -338,17 +370,18 @@ void worker_task_errorcb(struct bufferevent *bev, short error, void *arg)
 
 void worker_pusher_readcb(struct bufferevent *bev, void *arg)
 {
+    worker_t *w = (worker_t *)arg;
     // push
-    client_t *c;
     cmd_t cmd;
     while (evbuffer_get_length(bufferevent_get_input(bev)) >= sizeof cmd) {
         if (evbuffer_remove(bufferevent_get_input(bev), &cmd, sizeof cmd) != sizeof cmd) {
             err_quit("evbuffer_remove");
         }
         switch (cmd.cmd_no) {
-        case CMD_HEATBEAT:
-            c = (client_t *)cmd.data;
-            evbuffer_add_printf(bufferevent_get_output(c->bev), "heatbeat\n");
+        case CMD_BROADCAST:
+            broadcast(w, cmd.data, cmd.length);
+            break;
+        default:
             break;
         }
     }
@@ -386,6 +419,7 @@ void *worker_loop(void *arg)
     }
     event_add(timer_event, &timeout);
     event_base_dispatch(w->base);
+    return (void *)0;
 }
 
 int worker_start(worker_t *w)

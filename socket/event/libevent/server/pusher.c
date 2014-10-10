@@ -2,19 +2,27 @@
 #include "pusher.h"
 #include "worker.h"
 
+int pusher_broadcast(void *data, size_t length)
+{
+    worker_t *w;
+    cmd_t cmd;
+    //printf("pusher timer\n");
+    for (w = global.workers; w != NULL; w = w->next) {
+        cmd.cmd_no = CMD_BROADCAST;
+        cmd.data = malloc(length);
+        memcpy(cmd.data, data, length);
+        cmd.length = length;
+        evbuffer_add(bufferevent_get_output(w->bev_pusher[1]), &cmd, sizeof cmd);
+    }
+    return 0;
+}
+
 void pusher_timer(int fd, short event, void *arg)
 {
     pusher_t *p = (pusher_t *)arg;
-    client_t *c;
-    cmd_t cmd;
+    char *heartbeat = "heartbeat\n";
 
-    //printf("pusher timer\n");
-    for (c = global.clients; c != NULL; c = c->h2.next) {
-        cmd.cmd_no = CMD_HEATBEAT;
-        cmd.data = c;
-        cmd.length = sizeof c;
-        evbuffer_add(bufferevent_get_output(c->worker->bev_pusher[1]), &cmd, sizeof cmd);
-    }
+    pusher_broadcast(heartbeat, strlen(heartbeat));
     if (p->stop) {
         event_base_loopexit(p->base, NULL);
     }
@@ -63,6 +71,11 @@ void pusher_worker_readcb(struct bufferevent *bev, void *arg)
             HASH_DELETE(h2, global.clients, c);
             client_destroy(&c);
             break;
+        case CMD_BROADCAST:
+            pusher_broadcast(cmd.data, cmd.length);
+            break;
+        default:
+            break;
         }
     }
 }
@@ -78,14 +91,15 @@ void *pusher_loop(void *arg)
 {
     pusher_t *p = (pusher_t *)arg;
     event_base_dispatch(p->base);
+    return (void *)0;
 }
 
 int pusher_start(pusher_t *p)
 {
     struct event *timer_event;
-    struct timeval timeout = {1, 0};
+    struct timeval timeout = {10, 0};
     worker_t *w;
-    int ret, i;
+    int ret;
 
     timer_event = event_new(p->base, -1, EV_PERSIST, pusher_timer, p);
     if (NULL == timer_event) {

@@ -28,8 +28,8 @@ void http_headers_destroy(http_headers_t **h)
 int parse_http(struct evbuffer *b, http_headers_t *h)
 {
     char *line, *tmp;
-    size_t n, len;
-    while (line = evbuffer_readln(b, &n, EVBUFFER_EOL_CRLF)) {
+    size_t n;
+    while ((line = evbuffer_readln(b, &n, EVBUFFER_EOL_CRLF)) != NULL) {
         h->buffers[h->count++] = line;
         if (n == 0) {
             // finish
@@ -209,13 +209,13 @@ int parse_frame(struct evbuffer *b, websocket_frame_t *f)
                     break;
                 case 8:
                     f->len_64 = buf[0];
-                    f->len_64 = f->len_64 << 8 + buf[1];
-                    f->len_64 = f->len_64 << 8 + buf[2];
-                    f->len_64 = f->len_64 << 8 + buf[3];
-                    f->len_64 = f->len_64 << 8 + buf[4];
-                    f->len_64 = f->len_64 << 8 + buf[5];
-                    f->len_64 = f->len_64 << 8 + buf[6];
-                    f->len_64 = f->len_64 << 8 + buf[7];
+                    f->len_64 = (f->len_64 << 8) + buf[1];
+                    f->len_64 = (f->len_64 << 8) + buf[2];
+                    f->len_64 = (f->len_64 << 8) + buf[3];
+                    f->len_64 = (f->len_64 << 8) + buf[4];
+                    f->len_64 = (f->len_64 << 8) + buf[5];
+                    f->len_64 = (f->len_64 << 8) + buf[6];
+                    f->len_64 = (f->len_64 << 8) + buf[7];
                     f->length = f->len_64;
                     break;
                 default:
@@ -304,7 +304,6 @@ int send_handshake(struct evbuffer *b, const char *websocket_key)
         "Sec-WebSocket-Accept: %s\r\n"
         "\r\n";
     char tmp1[256], tmp2[256];
-    size_t len;
     int ret;
 
     snprintf(tmp1, sizeof(tmp1), "%s%s", websocket_key, _websocket_secret);

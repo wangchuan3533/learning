@@ -18,6 +18,7 @@ struct worker_s {
     pthread_t thread_id;
     int stop;
 
+    client_t *clients;
     // clients
     int sockpair_dispatcher[2];// TODO
     int sockpair_pusher[2];// TODO
@@ -46,16 +47,13 @@ struct client_s {
     int fd;
     // context
     worker_t *worker;
-    // reference count
-    int refcount;
-    pthread_mutex_t lock;
 };
 
 client_t *client_create();
 void client_destroy(client_t **c);
 worker_t *worker_create();
 void worker_destroy(worker_t **s);
-int broadcast(worker_t *w, void *data, unsigned int len);
+int broadcast(worker_t *w, void *data, size_t length);
 int worker_start(worker_t *w);
 int worker_stop(worker_t *w);
 #endif  //__WORKER_H_;

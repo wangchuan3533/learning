@@ -1,6 +1,3 @@
-#include <unistd.h>
-#include <stdlib.h>
-
 #include "define.h"
 #include "dispatcher.h"
 #include "worker.h"
@@ -49,23 +46,6 @@ void dispatcher_worker_errorcb(struct bufferevent *bev, short error, void *arg)
 {
 }
 
-void do_accept(int listener, short event, void *arg)
-{
-    dispatcher_t *d = (dispatcher_t *)arg;
-    struct sockaddr_storage ss;
-    socklen_t slen = sizeof(ss);
-    int fd = accept(listener, (struct sockaddr*)&ss, &slen);
-    char buf[128];
-
-    if (fd < 0) {
-        perror("accept");
-        //FD_SETSIZE
-    } else {
-        evutil_make_socket_nonblocking(fd);
-        round_robin_dispatch(d, fd);
-    }
-}
-
 int round_robin_dispatch(dispatcher_t *d, int fd)
 {
     static worker_t *cur = NULL;
@@ -88,10 +68,27 @@ int round_robin_dispatch(dispatcher_t *d, int fd)
     return 0;
 }
 
+void do_accept(int listener, short event, void *arg)
+{
+    dispatcher_t *d = (dispatcher_t *)arg;
+    struct sockaddr_storage ss;
+    socklen_t slen = sizeof(ss);
+    int fd = accept(listener, (struct sockaddr*)&ss, &slen);
+
+    if (fd < 0) {
+        perror("accept");
+        //FD_SETSIZE
+    } else {
+        evutil_make_socket_nonblocking(fd);
+        round_robin_dispatch(d, fd);
+    }
+}
+
 void *dispatcher_loop(void *arg)
 {
     dispatcher_t *d = (dispatcher_t *)arg;
     event_base_dispatch(d->base);
+    return (void *)0;
 }
 
 int dispatcher_start(dispatcher_t *d)
@@ -101,7 +98,7 @@ int dispatcher_start(dispatcher_t *d)
     evutil_socket_t listener;
     struct sockaddr_in sin;
     worker_t *w;
-    int ret, i;
+    int ret;
 
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = 0;
