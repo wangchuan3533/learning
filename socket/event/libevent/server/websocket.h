@@ -20,13 +20,13 @@
 
 #define MAX_WEBSOCKET_HEADER_LENGTH 14 //(2 + 8 + 4)
 
-typedef enum http_headers_state_s {
+enum http_headers_state_s {
     HTTP_HEADERS_STATE_STEP_0 = 0,
     HTTP_HEADERS_STATE_PARSED_REQUEST_LINE,
     HTTP_HEADERS_STATE_FINISHED
-} http_headers_state_t;
+};
 
-typedef struct http_headers_s {
+struct http_headers_s {
     //first line
     char *method;
     char *request_uri;
@@ -46,17 +46,17 @@ typedef struct http_headers_s {
     size_t count;
     // state
     http_headers_state_t state;
-} http_headers_t;
+};
 
-typedef enum frame_state_e {
+enum frame_state_e {
     FRAME_STATE_STEP_0 = 0,
     FRAME_STATE_STEP_1,
     FRAME_STATE_STEP_2,
     FRAME_STATE_STEP_3,
     FRAME_STATE_FINISHED
-} frame_state_t;
+};
 
-typedef struct websocket_frame_s {
+struct websocket_frame_s {
     //first byte
     unsigned fin:1;
     unsigned rsv1:1;   // must be 0
@@ -85,9 +85,8 @@ typedef struct websocket_frame_s {
     struct websocket_frame_s *next;
     struct websocket_frame_s *prev;
 
-} websocket_frame_t;
+};
 
-struct client_s;
 http_headers_t *http_headers_create();
 void http_headers_destroy(http_headers_t **h);
 void print_http_headers(http_headers_t *h);

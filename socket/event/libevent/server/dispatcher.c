@@ -5,10 +5,11 @@
 #include "dispatcher.h"
 #include "worker.h"
 
+global_t global = {NULL, NULL};
 void dispatcher_timer(int fd, short event, void *arg)
 {
     dispatcher_t *d = (dispatcher_t *)arg;
-    //printf("dispatcher timer");
+    //printf("dispatcher timer\n");
     if (d->stop) {
         event_base_loopexit(d->base, NULL);
     }
@@ -27,8 +28,6 @@ dispatcher_t *dispatcher_create()
         err_quit("event_base_new()");
     }
 
-    // init hash
-    d->worker_list = NULL;
     return d;
 }
 
@@ -61,9 +60,8 @@ void do_accept(int listener, short event, void *arg)
     if (fd < 0) {
         perror("accept");
         //FD_SETSIZE
-    } else if (fd > FD_SETSIZE) {
-        close(fd);
     } else {
+        evutil_make_socket_nonblocking(fd);
         round_robin_dispatch(d, fd);
     }
 }
@@ -71,15 +69,22 @@ void do_accept(int listener, short event, void *arg)
 int round_robin_dispatch(dispatcher_t *d, int fd)
 {
     static worker_t *cur = NULL;
+    client_t *c = client_create();
+    cmd_t cmd;
 
     if (!cur) {
-        cur = d->worker_list;
+        cur = global.workers;
     }
 
-    if (evbuffer_add(bufferevent_get_output(cur->bev), &fd, sizeof fd) != 0) {
+    c->fd = fd;
+    c->worker = cur;
+    cmd.cmd_no = CMD_ADD_CLIENT;
+    cmd.data = c;
+    cmd.length = sizeof c;
+    if (evbuffer_add(bufferevent_get_output(cur->bev_dispatcher[1]), &cmd, sizeof cmd) != 0) {
         err_quit("evbuffer_add");
     }
-    cur = cur->hh.next; 
+    cur = cur->next; 
     return 0;
 }
 
@@ -126,17 +131,14 @@ int dispatcher_start(dispatcher_t *d)
     event_add(timer_event, &timeout);
     event_add(listener_event, NULL);
 
-    // create workers
-    for (i = 0; i < WORKER_NUM; i++) {
-        w = worker_create();
-        w->bev = bufferevent_socket_new(d->base, w->fd[1], BEV_OPT_CLOSE_ON_FREE);
-        if (!w->bev) {
+    // create bev to workers
+    for (w = global.workers; w != NULL; w = w->next) {
+        w->bev_dispatcher[1] = bufferevent_socket_new(d->base, w->sockpair_dispatcher[1], BEV_OPT_CLOSE_ON_FREE);
+        if (!w->bev_dispatcher[1]) {
             err_quit("bufferevent_socket_new");
         }
-        bufferevent_setcb(w->bev, dispatcher_worker_readcb, dispatcher_worker_writecb, dispatcher_worker_errorcb, w);
-        bufferevent_enable(w->bev, EV_READ | EV_WRITE);
-        HASH_ADD(hh, d->worker_list, thread_id, sizeof(pthread_t), w);
-        ret = worker_start(w);
+        bufferevent_setcb(w->bev_dispatcher[1], dispatcher_worker_readcb, dispatcher_worker_writecb, dispatcher_worker_errorcb, w);
+        bufferevent_enable(w->bev_dispatcher[1], EV_READ | EV_WRITE);
     }
 
     ret = pthread_create(&(d->thread_id), NULL, dispatcher_loop, d);

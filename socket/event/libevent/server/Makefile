@@ -3,6 +3,7 @@ INCLUDE_PATH=$(JUMBO_ROOT)/include
 LIBRARY_PATH=$(JUMBO_ROOT)/lib
 C_FLAGS=-I$(INCLUDE_PATH) -g
 LD_FLAGS=-L$(LIBRARY_PATH) -levent
+HEADERS=$(wildcard *.h)
 SOURCES=$(wildcard *.c)
 OBJS=$(patsubst %c, %o, $(SOURCES))
 OBJ=server
@@ -14,7 +15,7 @@ all: $(OBJ)
 $(OBJ): $(OBJS)
 	$(CC) $(LD_FLAGS) $(OBJS) -o $@
 
-%.o: %.c
-	$(CC) $(C_FLAGS) -c $^
+%.o: %.c $(HEADERS)
+	$(CC) $(C_FLAGS) -c $<
 clean:
 	$(RM) $(OBJS) $(OBJ)

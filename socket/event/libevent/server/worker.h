@@ -3,54 +3,56 @@
 #include "define.h"
 
 // client states
-typedef enum client_state_e {
+enum client_state_e {
     CLIENT_STATE_ACCEPTED = 0,
     CLIENT_STATE_HTTP_PARSE_STARTED,
     CLIENT_STATE_HANDSHAKE_STARTED,
     CLIENT_STATE_WEBSOCKET_FRAME_LOOP,
-} client_state;
+};
 
+struct worker_s {
 
-typedef struct client_s client_t;
-typedef struct worker_s {
-
-    // hash of clients
-    client_t *client_list;
-    // count of clients
-    unsigned int client_count;
     // event base
     struct event_base *base;
-    // hash handle
-    UT_hash_handle hh;
-
+    worker_t *next;
     pthread_t thread_id;
     int stop;
 
-    int fd[2];// TODO
-    struct bufferevent *bev;
+    // clients
+    int sockpair_dispatcher[2];// TODO
+    int sockpair_pusher[2];// TODO
+    struct bufferevent *bev_dispatcher[2];
+    struct bufferevent *bev_pusher[2];
 
-} worker_t;
+};
 
-struct websocket_frame_s;
-struct http_headers_s;
 struct client_s {
     uint64_t client_id;
     struct bufferevent *bev;
+    struct evbuffer *buffer;
     // http headers
-    struct http_headers_s *headers;
+    http_headers_t *headers;
     // websocket frame
-    struct websocket_frame_s *frame;
+    websocket_frame_t *frame;
     // client state
-    client_state state;
-    // hash handle
-    UT_hash_handle hh;
+    client_state_t state;
+    // pusher hash handle
+    UT_hash_handle h1;
+    // worker hash handle
+    UT_hash_handle h2;
     // close_flag
     int close_flag;
+    // fd
+    int fd;
     // context
     worker_t *worker;
+    // reference count
+    int refcount;
+    pthread_mutex_t lock;
 };
 
-
+client_t *client_create();
+void client_destroy(client_t **c);
 worker_t *worker_create();
 void worker_destroy(worker_t **s);
 int broadcast(worker_t *w, void *data, unsigned int len);
