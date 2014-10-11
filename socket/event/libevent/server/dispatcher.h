@@ -2,6 +2,7 @@
 #define  __DISPATCHER_H_
 
 #include <pthread.h>
+#include "define.h"
 
 struct worker_s;
 struct dispatcher_s {

@@ -24,6 +24,7 @@ void pusher_timer(int fd, short event, void *arg)
     pusher_t *p = (pusher_t *)arg;
 
     if (p->stop) {
+        printf("pusher stoped\n");
         event_base_loopexit(p->base, NULL);
     }
 }
@@ -101,14 +102,23 @@ void pusher_worker_readcb(struct bufferevent *bev, void *arg)
             break;
         }
     }
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
 // hooks
 void pusher_worker_writecb(struct bufferevent *bev, void *arg)
 {
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
-void pusher_worker_errorcb(struct bufferevent *bev, short error, void *arg)
+void pusher_worker_eventcb(struct bufferevent *bev, short error, void *arg)
 {
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
 void *pusher_loop(void *arg)
@@ -137,7 +147,7 @@ int pusher_start(pusher_t *p)
         if (!w->bev_pusher[1]) {
             err_quit("bufferevent_socket_new");
         }
-        bufferevent_setcb(w->bev_pusher[1], pusher_worker_readcb, pusher_worker_writecb, pusher_worker_errorcb, w);
+        bufferevent_setcb(w->bev_pusher[1], pusher_worker_readcb, pusher_worker_writecb, pusher_worker_eventcb, w);
         bufferevent_setwatermark(w->bev_pusher[1], EV_READ, sizeof(cmd_t), 0);
         bufferevent_enable(w->bev_pusher[1], EV_READ | EV_WRITE);
     }

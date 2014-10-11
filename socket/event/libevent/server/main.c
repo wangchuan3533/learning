@@ -11,6 +11,7 @@ int main(int argc, char **argv)
     worker_t *w;
     pusher_t *p;
 
+    setvbuf(stdout, NULL, _IONBF, 0);
     for (i = 0; i < WORKER_NUM; i++) {
         w = worker_create();
         w->next = global.workers;

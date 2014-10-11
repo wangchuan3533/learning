@@ -71,6 +71,79 @@ void worker_delete_from_hash(client_t *c)
     }
 }
 
+// hooks
+void proxy_readcb(struct bufferevent *bev, void *arg)
+{
+    client_t *c = (client_t *)arg;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    size_t len = evbuffer_get_length(input);
+    char *buf = malloc(len);
+
+    if (buf == NULL) {
+        err_quit("malloc");
+    }
+    if (evbuffer_remove(input, buf, len) != len) {
+        err_quit("evbuffer_remove");
+    }
+#ifdef SEE_DATA
+    write(STDOUT_FILENO, buf, len);
+#endif
+    send_text_frame(bufferevent_get_output(c->bev), buf, len);
+    bufferevent_free(bev);
+    free(buf);
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
+}
+
+void proxy_writecb(struct bufferevent *bev, void *arg)
+{
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
+}
+
+void proxy_eventcb(struct bufferevent *bev, short events, void *arg)
+{
+    if (events & BEV_EVENT_CONNECTED) {
+        printf("proxy connected\n");
+        bufferevent_enable(bev, EV_READ | EV_WRITE);
+    } else if (events & BEV_EVENT_TIMEOUT) {
+        printf("proxy timeout");
+    } else if (events & BEV_EVENT_TIMEOUT) {
+        printf("proxy error");
+    } else {
+        bufferevent_free(bev);
+    }
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
+}
+
+int proxy_request(client_t *c, void *data, size_t length)
+{
+    struct sockaddr_in sin;
+    struct bufferevent *bev;
+    struct timeval timeout = {1, 0};
+
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = 0;
+    sin.sin_port = htons(8201);
+
+    bev = bufferevent_socket_new(c->worker->base, -1, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, proxy_readcb, proxy_writecb, proxy_eventcb, c);
+    bufferevent_set_timeouts(bev, &timeout, &timeout);
+    if (evbuffer_add(bufferevent_get_output(bev), data, length) != 0) {
+        err_quit("evbuffer_add");
+    }
+
+    if (bufferevent_socket_connect(bev, (struct sockaddr *)&sin, sizeof sin) < 0) {
+        bufferevent_free(bev);
+        err_quit("bufferevent_socket_connect");
+    }
+    return 0;
+}
+
 int websocket_broadcast(worker_t *w, void *data, size_t len)
 {
     int ret;
@@ -113,12 +186,23 @@ int websocket_handle(client_t *c)
         // TODO write cb
         break;
     case OPCODE_TEXT_FRAME:
-        //ret = send_text_frame(bufferevent_get_output(c->bev), f->data, f->length);
+#if 0
+        // websocket echo
+        send_text_frame(bufferevent_get_output(c->bev), f->data, f->length);
+#endif
 
-        // TODO unsafe
+#if 0
+        // websocket broadcast
         sprintf(str, "[%lu]: ", c->client_id);
         strncat(str, f->data, f->length);
         websocket_broadcast(c->worker, str, strlen(str));
+#endif
+
+#if 1
+        // websocket proxy
+        proxy_request(c, f->data, f->length);
+#endif
+
         // TODO write cb
         break;
     case OPCODE_PONG_FRAME:
@@ -142,7 +226,7 @@ int websocket_handle(client_t *c)
         }
         send_close_frame(bufferevent_get_output(c->bev), f->data, f->length);
         c->close_flag = 1;
-        bufferevent_setcb(c->bev, websocket_readcb, websocket_writecb, websocket_errorcb, c);
+        bufferevent_setcb(c->bev, websocket_readcb, websocket_writecb, websocket_eventcb, c);
         break;
     default:
         break;
@@ -168,7 +252,8 @@ void websocket_readcb(struct bufferevent *bev, void *arg)
                 return;
             }
             if (c->headers->state != HTTP_HEADERS_STATE_FINISHED) {
-                break;
+                // TODO is this ok?
+                return;
             }
 
             // parse finished
@@ -180,12 +265,12 @@ void websocket_readcb(struct bufferevent *bev, void *arg)
                 send_handshake(bufferevent_get_output(c->bev), c->headers->sec_websocket_key);
                 c->client_id = atoi(c->headers->client_id);
                 c->state = CLIENT_STATE_HANDSHAKE_STARTED;
-                bufferevent_setcb(bev, websocket_readcb, websocket_writecb, websocket_errorcb, arg);
+                bufferevent_setcb(bev, websocket_readcb, websocket_writecb, websocket_eventcb, arg);
             // not websocket, send 200 ok, and close socket when finish
             } else {
                 send_200_ok(bufferevent_get_output(c->bev));
                 c->close_flag = 1;
-                bufferevent_setcb(bev, websocket_readcb, websocket_writecb, websocket_errorcb, arg);
+                bufferevent_setcb(bev, websocket_readcb, websocket_writecb, websocket_eventcb, arg);
             }
             break;
         case CLIENT_STATE_WEBSOCKET_FRAME_LOOP:
@@ -213,6 +298,9 @@ void websocket_readcb(struct bufferevent *bev, void *arg)
             err_quit("Oops read client state:[%d]\n", c->state);
         }
     }
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
 void websocket_writecb(struct bufferevent *bev, void *arg)
@@ -221,7 +309,7 @@ void websocket_writecb(struct bufferevent *bev, void *arg)
     cmd_t cmd;
 
     // clear the write cb
-    bufferevent_setcb(bev, websocket_readcb, NULL, websocket_errorcb, arg);
+    bufferevent_setcb(bev, websocket_readcb, NULL, websocket_eventcb, arg);
 
     switch (c->state) {
     case CLIENT_STATE_HANDSHAKE_STARTED:
@@ -260,9 +348,12 @@ void websocket_writecb(struct bufferevent *bev, void *arg)
         }
         bufferevent_free(bev);
     }
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
-void websocket_errorcb(struct bufferevent *bev, short error, void *arg)
+void websocket_eventcb(struct bufferevent *bev, short error, void *arg)
 {
     client_t *c = (client_t *)arg;
     cmd_t cmd;
@@ -287,45 +378,18 @@ void websocket_errorcb(struct bufferevent *bev, short error, void *arg)
         err_quit("evbuffer_add");
     }
     bufferevent_free(bev);
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
 void worker_timer(int fd, short event, void *arg)
 {
     worker_t *w = (worker_t *)arg;
-    //printf("worker timer\n");
     if (w->stop) {
+        printf("worker stoped\n");
         event_base_loopexit(w->base, NULL);
     }
-}
-
-void echo_readcb(struct bufferevent *bev, void *arg)
-{
-    struct evbuffer *input = bufferevent_get_input(bev);
-    struct evbuffer *output = bufferevent_get_output(bev);
-
-    evbuffer_add_buffer(output, input);
-}
-
-void echo_errorcb(struct bufferevent *bev, short error, void *arg)
-{
-    client_t *c = (client_t *)arg;
-    cmd_t cmd;
-
-    if (error | BEV_EVENT_TIMEOUT) {
-        // TODO
-    } else if (error | BEV_EVENT_ERROR) {
-        // TODO
-    }
-
-    // delete from hash
-    worker_delete_from_hash(c);
-    // notify the pusher
-    cmd.cmd_no = CMD_DEL_CLIENT;
-    cmd.client = c;
-    if (evbuffer_add(bufferevent_get_output(c->worker->bev_pusher[0]), &cmd, sizeof cmd) != 0) {
-        err_quit("evbuffer_add");
-    }
-    bufferevent_free(bev);
 }
 
 int broadcast(worker_t *w, void *data, size_t length)
@@ -339,22 +403,26 @@ int broadcast(worker_t *w, void *data, size_t length)
     return 0;
 }
 
-void broadcast_inner_cb(struct bufferevent *bev, void *arg)
+void echo_readcb(struct bufferevent *bev, void *arg)
 {
-    client_t *c = (client_t *)arg;
     struct evbuffer *input = bufferevent_get_input(bev);
-    void *data; 
-    size_t len;
-    len = evbuffer_get_length(input);
-    data = malloc(len);
-    if (evbuffer_remove(input, data, len) != len) {
-        err_quit("evbuffer_remove");
-    }
-    broadcast(c->worker, data, len);
-    free(data);
+    struct evbuffer *output = bufferevent_get_output(bev);
+
+#ifdef SEE_DATA
+    char *buf = malloc(evbuffer_get_length(input));
+    evbuffer_copyout(input, buf, evbuffer_get_length(input));
+    write(STDOUT_FILENO, buf, evbuffer_get_length(input));
+    free(buf);
+#endif
+
+
+    evbuffer_add_buffer(output, input);
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
-void broadcast_inter_cb(struct bufferevent *bev, void *arg)
+void echo_broadcastcb(struct bufferevent *bev, void *arg)
 {
     client_t *c = (client_t *)arg;
     struct evbuffer *input = bufferevent_get_input(bev);
@@ -372,6 +440,25 @@ void broadcast_inter_cb(struct bufferevent *bev, void *arg)
     if (evbuffer_add(bufferevent_get_output(c->worker->bev_pusher[0]), &cmd, sizeof cmd) != 0) {
         err_quit("evbuffer_add");
     }
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
+}
+
+void echo_eventcb(struct bufferevent *bev, short error, void *arg)
+{
+    client_t *c = (client_t *)arg;
+    if (error | BEV_EVENT_TIMEOUT) {
+        // TODO
+    } else if (error | BEV_EVENT_ERROR) {
+        // TODO
+    }
+
+    bufferevent_free(bev);
+    client_destroy(&c);
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
 void worker_dispatcher_readcb(struct bufferevent *bev, void *arg)
@@ -396,30 +483,26 @@ void worker_dispatcher_readcb(struct bufferevent *bev, void *arg)
             }
             c->bev = bev_client;
             c->client_id = c->fd;
-            //bufferevent_setcb(bev_client, echo_readcb, NULL, echo_errorcb, c);
-            //bufferevent_setcb(bev_client, broadcast_inner_cb, NULL, echo_errorcb, c);
-            //bufferevent_setcb(bev_client, broadcast_inter_cb, NULL, echo_errorcb, c);
-            bufferevent_setcb(bev_client, websocket_readcb, NULL, websocket_errorcb, c);
-            bufferevent_setwatermark(bev_client, EV_READ, 0, CLIENT_HIGH_WATERMARK);
-            bufferevent_enable(bev_client, EV_READ|EV_WRITE);
-            bufferevent_set_timeouts(bev_client, &timeout, &timeout);
-
-#if 0
-            // add to hash
-            HASH_ADD(h1, w->clients, client_id, sizeof(c->client_id), c);
-            // pass cmd to pusher
-            if (evbuffer_add(bufferevent_get_output(w->bev_pusher[0]), &cmd, sizeof cmd) != 0) {
-                err_quit("evbuffer_add");
-            }
+            //bufferevent_setcb(bev_client, echo_broadcastcb, NULL, echo_eventcb, c);
+#ifdef ECHO_SERVER
+            bufferevent_setcb(bev_client, echo_readcb, NULL, echo_eventcb, c);
+#else
+            bufferevent_setcb(bev_client, websocket_readcb, NULL, websocket_eventcb, c);
 #endif
+            bufferevent_setwatermark(bev_client, EV_READ, 0, CLIENT_HIGH_WATERMARK);
+            bufferevent_enable(bev_client, EV_READ | EV_WRITE);
+            bufferevent_set_timeouts(bev_client, &timeout, &timeout);
             break;
         default:
             break;
         }
     }
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
-void worker_dispatcher_errorcb(struct bufferevent *bev, short error, void *arg)
+void worker_dispatcher_eventcb(struct bufferevent *bev, short error, void *arg)
 {
     printf("worker error\n");
     worker_t *w = (worker_t *)arg;
@@ -429,6 +512,9 @@ void worker_dispatcher_errorcb(struct bufferevent *bev, short error, void *arg)
         // TODO
     }
     w->stop = 1;
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
 void worker_pusher_readcb(struct bufferevent *bev, void *arg)
@@ -457,10 +543,16 @@ void worker_pusher_readcb(struct bufferevent *bev, void *arg)
             break;
         }
     }
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
-void worker_pusher_errorcb(struct bufferevent *bev, short error, void *arg)
+void worker_pusher_eventcb(struct bufferevent *bev, short error, void *arg)
 {
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
 void *worker_loop(void *arg)
@@ -474,7 +566,7 @@ void *worker_loop(void *arg)
     if (!w->bev_dispatcher[0]) {
         err_quit("bufferevent_socket_new");
     }
-    bufferevent_setcb(w->bev_dispatcher[0], worker_dispatcher_readcb, NULL, worker_dispatcher_errorcb, w);
+    bufferevent_setcb(w->bev_dispatcher[0], worker_dispatcher_readcb, NULL, worker_dispatcher_eventcb, w);
     bufferevent_setwatermark(w->bev_dispatcher[0], EV_READ, sizeof(cmd_t), 0);
     bufferevent_enable(w->bev_dispatcher[0], EV_READ | EV_WRITE);
 
@@ -483,7 +575,7 @@ void *worker_loop(void *arg)
     if (!w->bev_pusher[0]) {
         err_quit("bufferevent_socket_new");
     }
-    bufferevent_setcb(w->bev_pusher[0], worker_pusher_readcb, NULL, worker_pusher_errorcb, w);
+    bufferevent_setcb(w->bev_pusher[0], worker_pusher_readcb, NULL, worker_pusher_eventcb, w);
     bufferevent_setwatermark(w->bev_pusher[0], EV_READ, sizeof(cmd_t), 0);
     bufferevent_enable(w->bev_pusher[0], EV_READ | EV_WRITE);
 

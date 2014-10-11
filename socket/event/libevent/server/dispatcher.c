@@ -6,8 +6,8 @@ global_t global = {NULL, NULL};
 void dispatcher_timer(int fd, short event, void *arg)
 {
     dispatcher_t *d = (dispatcher_t *)arg;
-    //printf("dispatcher timer\n");
     if (d->stop) {
+        printf("dispatcher stoped\n");
         event_base_loopexit(d->base, NULL);
     }
 }
@@ -39,12 +39,21 @@ void dispatcher_destroy(dispatcher_t **d)
 // hooks
 void dispatcher_worker_readcb(struct bufferevent *bev, void *arg)
 {
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 void dispatcher_worker_writecb(struct bufferevent *bev, void *arg)
 {
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
-void dispatcher_worker_errorcb(struct bufferevent *bev, short error, void *arg)
+void dispatcher_worker_eventcb(struct bufferevent *bev, short error, void *arg)
 {
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
 }
 
 int round_robin_dispatch(dispatcher_t *d, int fd)
@@ -75,6 +84,9 @@ void do_accept(int listener, short event, void *arg)
     socklen_t slen = sizeof(ss);
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
 
+#ifdef TRACE
+    printf("%s\n", __FUNCTION__);
+#endif
     if (fd < 0) {
         perror("accept");
         //FD_SETSIZE
@@ -102,7 +114,11 @@ int dispatcher_start(dispatcher_t *d)
 
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = 0;
+#ifdef ECHO_SERVER
+    sin.sin_port = htons(8201);
+#else
     sin.sin_port = htons(8200);
+#endif
 
     listener = socket(AF_INET, SOCK_STREAM, 0);
     evutil_make_listen_socket_reuseable(listener);
@@ -134,7 +150,7 @@ int dispatcher_start(dispatcher_t *d)
         if (!w->bev_dispatcher[1]) {
             err_quit("bufferevent_socket_new");
         }
-        bufferevent_setcb(w->bev_dispatcher[1], dispatcher_worker_readcb, dispatcher_worker_writecb, dispatcher_worker_errorcb, w);
+        bufferevent_setcb(w->bev_dispatcher[1], dispatcher_worker_readcb, dispatcher_worker_writecb, dispatcher_worker_eventcb, w);
         bufferevent_setwatermark(w->bev_dispatcher[1], EV_READ, sizeof(cmd_t), 0);
         bufferevent_enable(w->bev_dispatcher[1], EV_READ | EV_WRITE);
     }

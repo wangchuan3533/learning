@@ -60,5 +60,5 @@ int worker_stop(worker_t *w);
 // private
 void websocket_readcb(struct bufferevent *bev, void *arg);
 void websocket_writecb(struct bufferevent *bev, void *arg);
-void websocket_errorcb(struct bufferevent *bev, short error, void *arg);
+void websocket_eventcb(struct bufferevent *bev, short error, void *arg);
 #endif  //__WORKER_H_;
