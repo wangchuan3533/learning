@@ -27,6 +27,7 @@
 } while (0)
 
 #define WORKER_NUM 4
+#define CLIENT_HIGH_WATERMARK 4096
 
 struct dispatcher_s;
 struct worker_s;

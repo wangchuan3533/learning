@@ -56,4 +56,9 @@ void worker_destroy(worker_t **s);
 int broadcast(worker_t *w, void *data, size_t length);
 int worker_start(worker_t *w);
 int worker_stop(worker_t *w);
+
+// private
+void websocket_readcb(struct bufferevent *bev, void *arg);
+void websocket_writecb(struct bufferevent *bev, void *arg);
+void websocket_errorcb(struct bufferevent *bev, short error, void *arg);
 #endif  //__WORKER_H_;

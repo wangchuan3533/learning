@@ -27,14 +27,10 @@ worker_t *worker_create()
 
 void worker_destroy(worker_t **w)
 {
-    client_t *itr = NULL, *tmp = NULL;
     // destroy event_base
     if (w && *w) {
-        // delete hash
-        HASH_ITER(h1, (*w)->clients, itr, tmp) {
-            // delete the client?
-            HASH_DELETE(h1, (*w)->clients, itr);
-        }
+        // clear the hash
+        HASH_CLEAR(h1, (*w)->clients); 
         free(*w);
         *w = NULL;
     }
@@ -64,6 +60,17 @@ void client_destroy(client_t **c)
     }
 }
 
+void worker_delete_from_hash(client_t *c)
+{
+    client_t *tmp;
+
+    // if in the hash, delete it
+    HASH_FIND(h1, c->worker->clients, &(c->client_id), sizeof(c->client_id), tmp);
+    if (tmp && c == tmp) {
+        HASH_DELETE(h1, c->worker->clients, c);
+    }
+}
+
 int websocket_broadcast(worker_t *w, void *data, size_t len)
 {
     int ret;
@@ -82,6 +89,7 @@ int websocket_broadcast(worker_t *w, void *data, size_t len)
     if (evbuffer_remove(buffer, tmp, length) != length) {
         err_quit("evbuffer_remove");
     }
+    evbuffer_free(buffer);
 
     cmd.cmd_no = CMD_BROADCAST;
     cmd.data = tmp;
@@ -96,21 +104,22 @@ int websocket_broadcast(worker_t *w, void *data, size_t len)
 int websocket_handle(client_t *c)
 {
     websocket_frame_t *f = c->frame;
-    int ret;
+    cmd_t cmd;
+    char str[128];
 
     switch (f->opcode) {
     case OPCODE_PING_FRAME:
-        ret = send_pong_frame(bufferevent_get_output(c->bev), f->data, f->length);
-        if (ret) {
-            // TODO error handling
-        }
+        send_pong_frame(bufferevent_get_output(c->bev), f->data, f->length);
+        // TODO write cb
         break;
     case OPCODE_TEXT_FRAME:
         //ret = send_text_frame(bufferevent_get_output(c->bev), f->data, f->length);
-        ret = websocket_broadcast(c->worker, f->data, f->length);
-        if (ret) {
-            // TODO
-        }
+
+        // TODO unsafe
+        sprintf(str, "[%lu]: ", c->client_id);
+        strncat(str, f->data, f->length);
+        websocket_broadcast(c->worker, str, strlen(str));
+        // TODO write cb
         break;
     case OPCODE_PONG_FRAME:
         // TODO
@@ -119,11 +128,21 @@ int websocket_handle(client_t *c)
         // TODO not surpport
         break;
     case OPCODE_CLOSE_FRAME:
-        ret = send_close_frame(bufferevent_get_output(c->bev), f->data, f->length);
-        if (ret) {
-            // TODO error handling
+        if (c->close_flag) {
+
+            worker_delete_from_hash(c);
+            // notify the pusher
+            cmd.cmd_no = CMD_DEL_CLIENT;
+            cmd.client = c;
+            if (evbuffer_add(bufferevent_get_output(c->worker->bev_pusher[0]), &cmd, sizeof cmd) != 0) {
+                err_quit("evbuffer_add");
+            }
+            bufferevent_free(c->bev);
+            break;
         }
+        send_close_frame(bufferevent_get_output(c->bev), f->data, f->length);
         c->close_flag = 1;
+        bufferevent_setcb(c->bev, websocket_readcb, websocket_writecb, websocket_errorcb, c);
         break;
     default:
         break;
@@ -157,12 +176,16 @@ void websocket_readcb(struct bufferevent *bev, void *arg)
             // check the websocket request
             ret = check_websocket_request(c->headers);
             if (ret == 0) {
-                ret = send_handshake(bufferevent_get_output(c->bev), c->headers->sec_websocket_key);
+                // asigned client_id
+                send_handshake(bufferevent_get_output(c->bev), c->headers->sec_websocket_key);
+                c->client_id = atoi(c->headers->client_id);
                 c->state = CLIENT_STATE_HANDSHAKE_STARTED;
+                bufferevent_setcb(bev, websocket_readcb, websocket_writecb, websocket_errorcb, arg);
             // not websocket, send 200 ok, and close socket when finish
             } else {
-                ret = send_200_ok(bufferevent_get_output(c->bev));
+                send_200_ok(bufferevent_get_output(c->bev));
                 c->close_flag = 1;
+                bufferevent_setcb(bev, websocket_readcb, websocket_writecb, websocket_errorcb, arg);
             }
             break;
         case CLIENT_STATE_WEBSOCKET_FRAME_LOOP:
@@ -179,7 +202,6 @@ void websocket_readcb(struct bufferevent *bev, void *arg)
                 }
                 // clear
                 ws_frame_clear(c->frame);
-                c->state = CLIENT_STATE_WEBSOCKET_FRAME_LOOP;
             }
             // send client's frame to co worker
 
@@ -195,15 +217,33 @@ void websocket_readcb(struct bufferevent *bev, void *arg)
 
 void websocket_writecb(struct bufferevent *bev, void *arg)
 {
-    client_t *c = (client_t *)arg;
+    client_t *c = (client_t *)arg, *tmp;
     cmd_t cmd;
+
+    // clear the write cb
+    bufferevent_setcb(bev, websocket_readcb, NULL, websocket_errorcb, arg);
 
     switch (c->state) {
     case CLIENT_STATE_HANDSHAKE_STARTED:
+        // handshaked , then add to hash
+        // check if the client_id exist
+        HASH_FIND(h1, c->worker->clients, &(c->client_id), sizeof(c->client_id), tmp);
+        if (tmp != NULL) {
+            send_close_frame(bufferevent_get_output(bev), "already login", strlen("already login"));
+            c->close_flag = 1;
+            return;
+        }
+        
+        HASH_ADD(h1, c->worker->clients, client_id, sizeof(c->client_id), c);
+        // notify pusher
+        cmd.cmd_no = CMD_ADD_CLIENT;
+        cmd.client = c;
+        if (evbuffer_add(bufferevent_get_output(c->worker->bev_pusher[0]), &cmd, sizeof cmd) != 0) {
+            err_quit("evbuffer_add");
+        }
+
+        // start the frame loop
         c->state = CLIENT_STATE_WEBSOCKET_FRAME_LOOP;
-        break;
-    case CLIENT_STATE_HTTP_PARSE_STARTED:
-    case CLIENT_STATE_WEBSOCKET_FRAME_LOOP:
         break;
     default:
         break;
@@ -211,7 +251,7 @@ void websocket_writecb(struct bufferevent *bev, void *arg)
 
     if (c->close_flag) {
         // delete from hash
-        HASH_DELETE(h1, c->worker->clients, c);
+        worker_delete_from_hash(c);
         // notify the pusher
         cmd.cmd_no = CMD_DEL_CLIENT;
         cmd.client = c;
@@ -227,35 +267,19 @@ void websocket_errorcb(struct bufferevent *bev, short error, void *arg)
     client_t *c = (client_t *)arg;
     cmd_t cmd;
     if (error & BEV_EVENT_EOF) {
+        printf("client:%lu EOF\n", c->client_id);
         /* connection has been closed, do any clean up here */
         /* ... */
     } else if (error & BEV_EVENT_ERROR) {
+        printf("client:%lu ERROR\n", c->client_id);
         /* check errno to see what error occurred */
         /* ... */
     } else if (error & BEV_EVENT_TIMEOUT) {
-        /* must be a timeout event handle, handle it */
-        switch (c->state) {
-        case CLIENT_STATE_ACCEPTED:
-        case CLIENT_STATE_HTTP_PARSE_STARTED:
-        case CLIENT_STATE_WEBSOCKET_FRAME_LOOP:
-            // read timeout -> close in write cb
-            if (error & BEV_EVENT_READING) {
-                break;
-            }
-            return;
-        case CLIENT_STATE_HANDSHAKE_STARTED:
-            if (error & BEV_EVENT_WRITING) {
-                break;
-            }
-            return;
-        default:
-            err_quit("Opps client's state = %d\n", c->state);
-        }
-            // write time out
+        printf("client:%lu TIMEOUT\n", c->client_id);
         /* ... */
     }
     // delete from hash
-    HASH_DELETE(h1, c->worker->clients, c);
+    worker_delete_from_hash(c);
     // notify the pusher
     cmd.cmd_no = CMD_DEL_CLIENT;
     cmd.client = c;
@@ -292,8 +316,9 @@ void echo_errorcb(struct bufferevent *bev, short error, void *arg)
     } else if (error | BEV_EVENT_ERROR) {
         // TODO
     }
+
     // delete from hash
-    HASH_DELETE(h1, c->worker->clients, c);
+    worker_delete_from_hash(c);
     // notify the pusher
     cmd.cmd_no = CMD_DEL_CLIENT;
     cmd.client = c;
@@ -349,7 +374,7 @@ void broadcast_inter_cb(struct bufferevent *bev, void *arg)
     }
 }
 
-void worker_task_readcb(struct bufferevent *bev, void *arg)
+void worker_dispatcher_readcb(struct bufferevent *bev, void *arg)
 {
     worker_t *w = (worker_t *)arg;
     struct bufferevent *bev_client;
@@ -374,16 +399,19 @@ void worker_task_readcb(struct bufferevent *bev, void *arg)
             //bufferevent_setcb(bev_client, echo_readcb, NULL, echo_errorcb, c);
             //bufferevent_setcb(bev_client, broadcast_inner_cb, NULL, echo_errorcb, c);
             //bufferevent_setcb(bev_client, broadcast_inter_cb, NULL, echo_errorcb, c);
-            bufferevent_setcb(bev_client, websocket_readcb, websocket_writecb, websocket_errorcb, c);
+            bufferevent_setcb(bev_client, websocket_readcb, NULL, websocket_errorcb, c);
+            bufferevent_setwatermark(bev_client, EV_READ, 0, CLIENT_HIGH_WATERMARK);
             bufferevent_enable(bev_client, EV_READ|EV_WRITE);
             bufferevent_set_timeouts(bev_client, &timeout, &timeout);
 
+#if 0
             // add to hash
             HASH_ADD(h1, w->clients, client_id, sizeof(c->client_id), c);
             // pass cmd to pusher
             if (evbuffer_add(bufferevent_get_output(w->bev_pusher[0]), &cmd, sizeof cmd) != 0) {
                 err_quit("evbuffer_add");
             }
+#endif
             break;
         default:
             break;
@@ -391,7 +419,7 @@ void worker_task_readcb(struct bufferevent *bev, void *arg)
     }
 }
 
-void worker_task_errorcb(struct bufferevent *bev, short error, void *arg)
+void worker_dispatcher_errorcb(struct bufferevent *bev, short error, void *arg)
 {
     printf("worker error\n");
     worker_t *w = (worker_t *)arg;
@@ -417,6 +445,14 @@ void worker_pusher_readcb(struct bufferevent *bev, void *arg)
             broadcast(w, cmd.data, cmd.length);
             free(cmd.data);
             break;
+        case CMD_DEL_CLIENT:
+            worker_delete_from_hash(cmd.client);
+            send_close_frame(bufferevent_get_output(cmd.client->bev), "already login", strlen("already login"));
+            cmd.client->close_flag = 1;
+            return;
+            bufferevent_free(cmd.client->bev);
+            client_destroy(&(cmd.client));
+            break;
         default:
             break;
         }
@@ -438,7 +474,7 @@ void *worker_loop(void *arg)
     if (!w->bev_dispatcher[0]) {
         err_quit("bufferevent_socket_new");
     }
-    bufferevent_setcb(w->bev_dispatcher[0], worker_task_readcb, NULL, worker_task_errorcb, w);
+    bufferevent_setcb(w->bev_dispatcher[0], worker_dispatcher_readcb, NULL, worker_dispatcher_errorcb, w);
     bufferevent_setwatermark(w->bev_dispatcher[0], EV_READ, sizeof(cmd_t), 0);
     bufferevent_enable(w->bev_dispatcher[0], EV_READ | EV_WRITE);
 

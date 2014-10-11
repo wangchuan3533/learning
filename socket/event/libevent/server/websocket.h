@@ -41,6 +41,9 @@ struct http_headers_s {
     char *sec_websocket_protocol;
     char *sec_websocket_version;
 
+    // special
+    char *client_id;
+
     // buffers & buffers count
     char *buffers[MAX_HTTP_HEADERS];
     size_t count;

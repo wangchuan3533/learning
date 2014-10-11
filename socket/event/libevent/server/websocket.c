@@ -43,6 +43,7 @@ int parse_http(struct evbuffer *b, http_headers_t *h)
             if (tmp != NULL) {
                 *tmp++ = '\0';
                 h->request_uri = tmp;
+                h->client_id = h->request_uri + 1;
                 tmp = strrchr(tmp, ' ');
                 if (tmp != NULL) {
                     *tmp++ = '\0';
@@ -250,13 +251,21 @@ int parse_frame(struct evbuffer *b, websocket_frame_t *f)
             return 0;
         }
     case FRAME_STATE_STEP_3:
-        n = evbuffer_remove(b, f->data + f->cur, len);
+        to_be_read = f->length - f->cur;
+        if (to_be_read > len) {
+            to_be_read = len;
+        }
+        n = evbuffer_remove(b, f->data + f->cur, to_be_read);
+        //n = evbuffer_remove(b, f->data + f->cur, len);
         f->cur += n;
         if (f->cur == f->length) {
             for (i = 0; i < f->cur; i++) {
                 f->data[i] ^= f->mask_key[i % 4];
             }
             f->state = FRAME_STATE_FINISHED;
+        } else if (f->cur > f->length) {
+            // impossible
+            err_quit("Opps\n");
         }
         return 0;
     default:
@@ -268,11 +277,13 @@ int check_websocket_request(http_headers_t *h)
 {
     if (strncasecmp(h->method, "GET", strlen("GET")))
         return -1;
-    if (strncasecmp(h->request_uri, "/chat", strlen("/chat")))
-        return -1;
     if (strncasecmp(h->connection, "Upgrade", strlen("Upgrade")))
         return -1;
     if (!h->sec_websocket_key)
+        return -1;
+    if (h->request_uri[0] != '/')
+        return -1;
+    if (atoi(h->client_id) <= 0)
         return -1;
     return 0;
 }
@@ -311,7 +322,7 @@ int send_handshake(struct evbuffer *b, const char *websocket_key)
     base64enc(tmp1, tmp2, 20);
     ret = evbuffer_add_printf(b, handshake_template, tmp1);
     //debug
-    printf(handshake_template, tmp1);
+    //printf(handshake_template, tmp1);
     if (ret != strlen(handshake_template) + strlen(tmp1) - 2) {
         return -1;
     }

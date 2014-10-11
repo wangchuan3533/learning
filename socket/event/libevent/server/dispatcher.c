@@ -36,6 +36,7 @@ void dispatcher_destroy(dispatcher_t **d)
     *d = NULL;
 }
 
+// hooks
 void dispatcher_worker_readcb(struct bufferevent *bev, void *arg)
 {
 }
@@ -151,5 +152,3 @@ int dispatcher_stop(dispatcher_t *d)
     d->stop = 1;
     return 0;
 }
-
-

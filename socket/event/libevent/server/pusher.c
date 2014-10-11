@@ -2,7 +2,7 @@
 #include "pusher.h"
 #include "worker.h"
 
-int pusher_broadcast(void *data, size_t length)
+int broadcast_to_worker(void *data, size_t length)
 {
     worker_t *w;
     cmd_t cmd;
@@ -12,7 +12,9 @@ int pusher_broadcast(void *data, size_t length)
         cmd.data = malloc(length);
         memcpy(cmd.data, data, length);
         cmd.length = length;
-        evbuffer_add(bufferevent_get_output(w->bev_pusher[1]), &cmd, sizeof cmd);
+        if (evbuffer_add(bufferevent_get_output(w->bev_pusher[1]), &cmd, sizeof cmd) != 0) {
+            err_quit("evbuffer_add");
+        }
     }
     return 0;
 }
@@ -47,10 +49,22 @@ void pusher_destroy(pusher_t **p)
     *p = NULL;
 }
 
+void pusher_delete_from_hash(client_t *c)
+{
+    client_t *tmp;
+
+    // if in the hash, delete it
+    HASH_FIND(h2, global.clients, &(c->client_id), sizeof(c->client_id), tmp);
+    if (tmp && c == tmp) {
+        HASH_DELETE(h2, global.clients, c);
+    }
+}
+
 void pusher_worker_readcb(struct bufferevent *bev, void *arg)
 {
     struct evbuffer *input = bufferevent_get_input(bev);
-    client_t *c;
+    worker_t *w = (worker_t *)arg;
+    client_t *c, *tmp;
     cmd_t cmd;
 
     while (evbuffer_get_length(input) >= sizeof cmd) {
@@ -61,16 +75,26 @@ void pusher_worker_readcb(struct bufferevent *bev, void *arg)
         case CMD_ADD_CLIENT:
             printf("client added\n");
             c = cmd.client;
+            // check if the client exists
+            HASH_FIND(h2, global.clients, &(c->client_id), sizeof(c->client_id), tmp);
+            // found, reject it
+            if (tmp != NULL) {
+                cmd.cmd_no = CMD_DEL_CLIENT;
+                if (evbuffer_add(bufferevent_get_output(w->bev_pusher[1]), &cmd, sizeof cmd) != 0) {
+                    err_quit("evbuffer_add");
+                }
+                break;
+            }
             HASH_ADD(h2, global.clients, client_id, sizeof(c->client_id), c);
             break;
         case CMD_DEL_CLIENT:
             printf("client deleted\n");
             c = cmd.client;
-            HASH_DELETE(h2, global.clients, c);
+            pusher_delete_from_hash(c);
             client_destroy(&c);
             break;
         case CMD_BROADCAST:
-            pusher_broadcast(cmd.data, cmd.length);
+            broadcast_to_worker(cmd.data, cmd.length);
             free(cmd.data);
             break;
         default:
@@ -79,6 +103,7 @@ void pusher_worker_readcb(struct bufferevent *bev, void *arg)
     }
 }
 
+// hooks
 void pusher_worker_writecb(struct bufferevent *bev, void *arg)
 {
 }

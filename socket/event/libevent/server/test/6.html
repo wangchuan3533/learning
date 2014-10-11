@@ -3,7 +3,7 @@
 <title>WebSocket Test</title>  
 <script language="javascript" type="text/javascript">
 
-var wsUri = "ws://cp01-rdqa-dev347.cp01.baidu.com:8200/1";
+var wsUri = "ws://cp01-rdqa-dev347.cp01.baidu.com:8200/6";
 var output;  
 function init() {
    output = document.getElementById("output");
@@ -55,7 +55,7 @@ function myTimer()
     doSend(Math.random().toString());
 }
 window.addEventListener("load", init, false); 
-//window.setInterval("myTimer()", 1000);
+window.setInterval("myTimer()", 1000);
 </script> 
 <h2>WebSocket Test</h2>
 <div id="output"></div>
