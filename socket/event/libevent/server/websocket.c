@@ -11,16 +11,15 @@ http_headers_t *http_headers_create()
     return h;
 }
 
-void http_headers_destroy(http_headers_t **h)
+void http_headers_destroy(http_headers_t *h)
 {
     int i;
-    if (h && *h) {
-        for (i = 0; i < (*h)->count; i++) {
-            if ((*h)->buffers[i])
-                free((*h)->buffers[i]);
+    if (h) {
+        for (i = 0; i < h->count; i++) {
+            if (h->buffers[i])
+                free(h->buffers[i]);
         }
-        free(*h);
-        *h = NULL;
+        free(h);
     }
 }
 
@@ -43,7 +42,7 @@ int parse_http(struct evbuffer *b, http_headers_t *h)
             if (tmp != NULL) {
                 *tmp++ = '\0';
                 h->request_uri = tmp;
-                h->client_id = h->request_uri + 1;
+                h->user_id = h->request_uri + 1;
                 tmp = strrchr(tmp, ' ');
                 if (tmp != NULL) {
                     *tmp++ = '\0';
@@ -63,6 +62,10 @@ int parse_http(struct evbuffer *b, http_headers_t *h)
         if (strncasecmp(HTTP_HEADER_CONNECTION, line, strlen(HTTP_HEADER_CONNECTION)) == 0) {
             tmp = strchr(line, ' ');
             h->connection = tmp + 1;
+        }
+        if (strncasecmp(HTTP_HEADER_COOKIE, line, strlen(HTTP_HEADER_COOKIE)) == 0) {
+            tmp = strchr(line, ' ');
+            h->cookie = tmp + 1;
         }
         if (strncasecmp(HTTP_HEADER_UPGRADE, line, strlen(HTTP_HEADER_UPGRADE)) == 0) {
             tmp = strchr(line, ' ');
@@ -106,6 +109,10 @@ void print_http_headers(http_headers_t *h)
         printf("[user_agent]:%s\n", h->user_agent);
     else
         printf("[user_agent]:NULL\n");
+    if (h->cookie)
+        printf("[cookie]:%s\n", h->cookie);
+    else
+        printf("[cookie]:NULL\n");
     if (h->connection)
         printf("[connection]:%s\n", h->connection);
     else
@@ -138,14 +145,13 @@ websocket_frame_t *ws_frame_create()
     return f;
 }
 
-void ws_frame_destroy(websocket_frame_t **f)
+void ws_frame_destroy(websocket_frame_t *f)
 {
-    if (f && *f) {
-        if ((*f)->data) {
-            free((*f)->data);
+    if (f) {
+        if (f->data) {
+            free(f->data);
         }
-        free(*f);
-        *f = NULL;
+        free(f);
     }
 }
 
@@ -275,15 +281,15 @@ int parse_frame(struct evbuffer *b, websocket_frame_t *f)
 
 int check_websocket_request(http_headers_t *h)
 {
-    if (strncasecmp(h->method, "GET", strlen("GET")))
+    if (!h->method || strncasecmp(h->method, "GET", strlen("GET")))
         return -1;
-    if (strncasecmp(h->connection, "Upgrade", strlen("Upgrade")))
+    if (!h->connection || strncasecmp(h->connection, "Upgrade", strlen("Upgrade")))
         return -1;
     if (!h->sec_websocket_key)
         return -1;
-    if (h->request_uri[0] != '/')
+    if (!h->request_uri || h->request_uri[0] != '/')
         return -1;
-    if (atoi(h->client_id) <= 0)
+    if (!h->user_id || atoi(h->user_id) <= 0)
         return -1;
     return 0;
 }
@@ -394,7 +400,7 @@ int send_frame(struct evbuffer *b, websocket_frame_t *f)
     return ret;
 }
 
-int send_text_frame(struct evbuffer *b, void *data, size_t len)
+int send_text_frame(struct evbuffer *b, const void *data, size_t len)
 {
     websocket_frame_t f;
 
@@ -408,12 +414,12 @@ int send_text_frame(struct evbuffer *b, void *data, size_t len)
 
     f.mask = 0;
     f.length = len;
-    f.data = data;
+    f.data = (void *)data;
 
     return send_frame(b, &f);
 }
 
-int send_binary_frame(struct evbuffer *b, void *data, size_t len)
+int send_binary_frame(struct evbuffer *b, const void *data, size_t len)
 {
     websocket_frame_t f;
 
@@ -427,12 +433,12 @@ int send_binary_frame(struct evbuffer *b, void *data, size_t len)
 
     f.mask = 0;
     f.length = len;
-    f.data = data;
+    f.data = (void *)data;
 
     return send_frame(b, &f);
 }
 
-int send_close_frame(struct evbuffer *b, void *data, size_t len)
+int send_close_frame(struct evbuffer *b, const void *data, size_t len)
 {
     websocket_frame_t f;
 
@@ -446,12 +452,12 @@ int send_close_frame(struct evbuffer *b, void *data, size_t len)
 
     f.mask = 0;
     f.length = len;
-    f.data = data;
+    f.data = (void *)data;
 
     return send_frame(b, &f);
 }
 
-int send_ping_frame(struct evbuffer *b, void *data, size_t len)
+int send_ping_frame(struct evbuffer *b, const void *data, size_t len)
 {
     websocket_frame_t f;
 
@@ -465,12 +471,12 @@ int send_ping_frame(struct evbuffer *b, void *data, size_t len)
 
     f.mask = 0;
     f.length = len;
-    f.data = data;
+    f.data = (void *)data;
 
     return send_frame(b, &f);
 }
 
-int send_pong_frame(struct evbuffer *b, void *data, size_t len)
+int send_pong_frame(struct evbuffer *b, const void *data, size_t len)
 {
     websocket_frame_t f;
 
@@ -484,7 +490,7 @@ int send_pong_frame(struct evbuffer *b, void *data, size_t len)
 
     f.mask = 0;
     f.length = len;
-    f.data = data;
+    f.data = (void *)data;
 
     return send_frame(b, &f);
 }

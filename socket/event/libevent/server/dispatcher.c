@@ -28,12 +28,11 @@ dispatcher_t *dispatcher_create()
     return d;
 }
 
-void dispatcher_destroy(dispatcher_t **d)
+void dispatcher_destroy(dispatcher_t *d)
 {
-    if (d && *d) {
-        free(*d);
+    if (d) {
+        free(d);
     }
-    *d = NULL;
 }
 
 // hooks
@@ -88,7 +87,7 @@ void do_accept(int listener, short event, void *arg)
     printf("%s\n", __FUNCTION__);
 #endif
     if (fd < 0) {
-        perror("accept");
+        err_quit("accept");
         //FD_SETSIZE
     } else {
         evutil_make_socket_nonblocking(fd);
@@ -136,13 +135,13 @@ int dispatcher_start(dispatcher_t *d)
     if (NULL == listener_event) {
         err_quit("event_new");
     }
+    event_add(listener_event, NULL);
 
     timer_event = event_new(d->base, -1, EV_PERSIST, dispatcher_timer, d);
     if (NULL == timer_event) {
         err_quit("event_new");
     }
     event_add(timer_event, &timeout);
-    event_add(listener_event, NULL);
 
     // create bev to workers
     for (w = global.workers; w != NULL; w = w->next) {

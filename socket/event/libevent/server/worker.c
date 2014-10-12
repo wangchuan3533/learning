@@ -25,14 +25,13 @@ worker_t *worker_create()
     return w;
 }
 
-void worker_destroy(worker_t **w)
+void worker_destroy(worker_t *w)
 {
     // destroy event_base
-    if (w && *w) {
+    if (w) {
         // clear the hash
-        HASH_CLEAR(h1, (*w)->clients); 
-        free(*w);
-        *w = NULL;
+        HASH_CLEAR(h1, w->clients); 
+        free(w);
     }
 }
 
@@ -44,19 +43,18 @@ client_t *client_create()
     }
     // memset
     memset(c, 0, sizeof(client_t));
-    // client_id
+    // user_id
     c->headers = http_headers_create();
     c->frame = ws_frame_create();
     return c;
 }
 
-void client_destroy(client_t **c)
+void client_destroy(client_t *c)
 {
-    if (c && *c) {
-        ws_frame_destroy(&((*c)->frame));
-        http_headers_destroy(&((*c)->headers));
-        free(*c);
-        *c = NULL;
+    if (c) {
+        ws_frame_destroy(c->frame);
+        http_headers_destroy(c->headers);
+        free(c);
     }
 }
 
@@ -65,7 +63,7 @@ void worker_delete_from_hash(client_t *c)
     client_t *tmp;
 
     // if in the hash, delete it
-    HASH_FIND(h1, c->worker->clients, &(c->client_id), sizeof(c->client_id), tmp);
+    HASH_FIND(h1, c->worker->clients, &(c->user_id), sizeof(c->user_id), tmp);
     if (tmp && c == tmp) {
         HASH_DELETE(h1, c->worker->clients, c);
     }
@@ -105,14 +103,25 @@ void proxy_writecb(struct bufferevent *bev, void *arg)
 
 void proxy_eventcb(struct bufferevent *bev, short events, void *arg)
 {
+    client_t *c = (client_t *)arg;
+    const char *timeout = "timeout!";
+    const char *not_found = "not found 404!";
+    const char *closed = "connection closed!";
+    const char *unknown = "unknown error!";
+
     if (events & BEV_EVENT_CONNECTED) {
-        printf("proxy connected\n");
         bufferevent_enable(bev, EV_READ | EV_WRITE);
     } else if (events & BEV_EVENT_TIMEOUT) {
-        printf("proxy timeout");
-    } else if (events & BEV_EVENT_TIMEOUT) {
-        printf("proxy error");
+        send_text_frame(bufferevent_get_output(c->bev), timeout, strlen(timeout));
+        bufferevent_free(bev);
+    } else if (events & BEV_EVENT_ERROR) {
+        send_text_frame(bufferevent_get_output(c->bev), not_found, strlen(not_found));
+        bufferevent_free(bev);
+    } else if (events & BEV_EVENT_EOF) {
+        send_text_frame(bufferevent_get_output(c->bev), closed, strlen(closed));
+        bufferevent_free(bev);
     } else {
+        send_text_frame(bufferevent_get_output(c->bev), unknown, strlen(unknown));
         bufferevent_free(bev);
     }
 #ifdef TRACE
@@ -193,7 +202,7 @@ int websocket_handle(client_t *c)
 
 #if 0
         // websocket broadcast
-        sprintf(str, "[%lu]: ", c->client_id);
+        sprintf(str, "[%lu]: ", c->user_id);
         strncat(str, f->data, f->length);
         websocket_broadcast(c->worker, str, strlen(str));
 #endif
@@ -257,13 +266,15 @@ void websocket_readcb(struct bufferevent *bev, void *arg)
             }
 
             // parse finished
-            print_http_headers(c->headers);
+#ifdef TRACE
+    print_http_headers(c->headers);
+#endif
             // check the websocket request
             ret = check_websocket_request(c->headers);
             if (ret == 0) {
-                // asigned client_id
+                // asigned user_id
                 send_handshake(bufferevent_get_output(c->bev), c->headers->sec_websocket_key);
-                c->client_id = atoi(c->headers->client_id);
+                c->user_id = atoi(c->headers->user_id);
                 c->state = CLIENT_STATE_HANDSHAKE_STARTED;
                 bufferevent_setcb(bev, websocket_readcb, websocket_writecb, websocket_eventcb, arg);
             // not websocket, send 200 ok, and close socket when finish
@@ -314,15 +325,15 @@ void websocket_writecb(struct bufferevent *bev, void *arg)
     switch (c->state) {
     case CLIENT_STATE_HANDSHAKE_STARTED:
         // handshaked , then add to hash
-        // check if the client_id exist
-        HASH_FIND(h1, c->worker->clients, &(c->client_id), sizeof(c->client_id), tmp);
+        // check if the user_id exist
+        HASH_FIND(h1, c->worker->clients, &(c->user_id), sizeof(c->user_id), tmp);
         if (tmp != NULL) {
             send_close_frame(bufferevent_get_output(bev), "already login", strlen("already login"));
             c->close_flag = 1;
             return;
         }
         
-        HASH_ADD(h1, c->worker->clients, client_id, sizeof(c->client_id), c);
+        HASH_ADD(h1, c->worker->clients, user_id, sizeof(c->user_id), c);
         // notify pusher
         cmd.cmd_no = CMD_ADD_CLIENT;
         cmd.client = c;
@@ -358,15 +369,17 @@ void websocket_eventcb(struct bufferevent *bev, short error, void *arg)
     client_t *c = (client_t *)arg;
     cmd_t cmd;
     if (error & BEV_EVENT_EOF) {
-        printf("client:%lu EOF\n", c->client_id);
         /* connection has been closed, do any clean up here */
+        if (!c->close_flag) {
+            printf("client:%lu EOF\n", c->user_id);
+        }
         /* ... */
     } else if (error & BEV_EVENT_ERROR) {
-        printf("client:%lu ERROR\n", c->client_id);
+        printf("client:%lu ERROR\n", c->user_id);
         /* check errno to see what error occurred */
         /* ... */
     } else if (error & BEV_EVENT_TIMEOUT) {
-        printf("client:%lu TIMEOUT\n", c->client_id);
+        printf("client:%lu TIMEOUT\n", c->user_id);
         /* ... */
     }
     // delete from hash
@@ -415,7 +428,6 @@ void echo_readcb(struct bufferevent *bev, void *arg)
     free(buf);
 #endif
 
-
     evbuffer_add_buffer(output, input);
 #ifdef TRACE
     printf("%s\n", __FUNCTION__);
@@ -455,7 +467,7 @@ void echo_eventcb(struct bufferevent *bev, short error, void *arg)
     }
 
     bufferevent_free(bev);
-    client_destroy(&c);
+    client_destroy(c);
 #ifdef TRACE
     printf("%s\n", __FUNCTION__);
 #endif
@@ -482,7 +494,7 @@ void worker_dispatcher_readcb(struct bufferevent *bev, void *arg)
                 err_quit("bufferevent_socket_new");
             }
             c->bev = bev_client;
-            c->client_id = c->fd;
+            c->user_id = c->fd;
             //bufferevent_setcb(bev_client, echo_broadcastcb, NULL, echo_eventcb, c);
 #ifdef ECHO_SERVER
             bufferevent_setcb(bev_client, echo_readcb, NULL, echo_eventcb, c);
@@ -537,7 +549,10 @@ void worker_pusher_readcb(struct bufferevent *bev, void *arg)
             cmd.client->close_flag = 1;
             return;
             bufferevent_free(cmd.client->bev);
-            client_destroy(&(cmd.client));
+            client_destroy(cmd.client);
+            break;
+        case CMD_NOTIFY:
+            send_text_frame(bufferevent_get_output(cmd.client->bev), "message", strlen("message"));
             break;
         default:
             break;

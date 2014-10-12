@@ -12,7 +12,7 @@ struct dispatcher_s {
 };
 
 dispatcher_t *dispatcher_create();
-void dispatcher_destroy(dispatcher_t **d);
+void dispatcher_destroy(dispatcher_t *d);
 int dispatcher_start(dispatcher_t *d);
 int dispatcher_stop(dispatcher_t *d);
 

@@ -32,6 +32,7 @@
 struct dispatcher_s;
 struct worker_s;
 struct pusher_s;
+struct notifier_s;
 struct client_s;
 struct global_s;
 enum http_headers_state_s;
@@ -46,6 +47,7 @@ typedef struct dispatcher_s dispatcher_t;
 typedef struct worker_s worker_t;
 typedef struct pusher_s pusher_t;
 typedef struct client_s client_t;
+typedef struct notifier_s notifier_t;
 typedef struct global_s global_t;
 typedef enum http_headers_state_s http_headers_state_t;
 typedef struct http_headers_s http_headers_t;
@@ -63,7 +65,7 @@ struct global_s {
 enum cmd_no_e {
     CMD_ADD_CLIENT = 0,
     CMD_DEL_CLIENT,
-    CMD_PUSH,
+    CMD_NOTIFY,
     CMD_BROADCAST,
     CMD_HEATBEAT,
 };

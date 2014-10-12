@@ -3,6 +3,7 @@
 #include "dispatcher.h"
 #include "worker.h"
 #include "pusher.h"
+#include "notifier.h"
 
 int main(int argc, char **argv)
 {
@@ -10,6 +11,7 @@ int main(int argc, char **argv)
     dispatcher_t *d;
     worker_t *w;
     pusher_t *p;
+    notifier_t *n;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     for (i = 0; i < WORKER_NUM; i++) {
@@ -25,7 +27,14 @@ int main(int argc, char **argv)
     p = pusher_create();
     ret = pusher_start(p);
     if (ret != 0) {
-        err_quit("dispatcher_start");
+        err_quit("pusher_start");
+    }
+
+    n = notifier_create();
+    n->pusher = p;
+    ret = notifier_start(n);
+    if (ret != 0) {
+        err_quit("notifier_start");
     }
 
     d = dispatcher_create();

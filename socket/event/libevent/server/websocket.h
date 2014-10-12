@@ -4,6 +4,7 @@
 #define MAX_HTTP_HEADERS 128
 #define HTTP_HEADER_HOST "Host:"
 #define HTTP_HEADER_USER_AGENT "User-Agent:"
+#define HTTP_HEADER_COOKIE "Cookie:"
 #define HTTP_HEADER_CONNECTION "Connection:"
 #define HTTP_HEADER_UPGRADE "Upgrade:"
 #define HTTP_HEADER_SEC_WEBSOCKET_KEY "Sec-WebSocket-Key:"
@@ -35,6 +36,7 @@ struct http_headers_s {
     // headers
     char *host;
     char *user_agent;
+    char *cookie;
     char *connection;
     char *upgrade;
     char *sec_websocket_key;
@@ -42,7 +44,7 @@ struct http_headers_s {
     char *sec_websocket_version;
 
     // special
-    char *client_id;
+    char *user_id;
 
     // buffers & buffers count
     char *buffers[MAX_HTTP_HEADERS];
@@ -91,21 +93,21 @@ struct websocket_frame_s {
 };
 
 http_headers_t *http_headers_create();
-void http_headers_destroy(http_headers_t **h);
+void http_headers_destroy(http_headers_t *h);
 void print_http_headers(http_headers_t *h);
 int parse_http(struct evbuffer *b, http_headers_t *h);
 
 websocket_frame_t *ws_frame_create();
-void ws_frame_destroy(websocket_frame_t **f);
+void ws_frame_destroy(websocket_frame_t *f);
 void ws_frame_clear(websocket_frame_t *f);
 int check_websocket_request(http_headers_t *h);
 int parse_frame(struct evbuffer *b, websocket_frame_t *f);
 
 int send_200_ok(struct evbuffer *b);
 int send_handshake(struct evbuffer *b, const char *websocket_key);
-int send_text_frame(struct evbuffer *b, void *data, size_t len);
-int send_ping_frame(struct evbuffer *b, void *data, size_t len);
-int send_pong_frame(struct evbuffer *b, void *data, size_t len);
-int send_binary_frame(struct evbuffer *b, void *data, size_t len);
-int send_close_frame(struct evbuffer *b, void *data, size_t len);
+int send_text_frame(struct evbuffer *b, const void *data, size_t len);
+int send_ping_frame(struct evbuffer *b, const void *data, size_t len);
+int send_pong_frame(struct evbuffer *b, const void *data, size_t len);
+int send_binary_frame(struct evbuffer *b, const void *data, size_t len);
+int send_close_frame(struct evbuffer *b, const void *data, size_t len);
 #endif  //__WEBSOCKET_H_;

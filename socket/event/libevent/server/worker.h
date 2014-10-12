@@ -18,17 +18,21 @@ struct worker_s {
     pthread_t thread_id;
     int stop;
 
-    client_t *clients;
     // clients
-    int sockpair_dispatcher[2];// TODO
-    int sockpair_pusher[2];// TODO
+    client_t *clients;
+
+    // pipe to dispatcher
+    int sockpair_dispatcher[2];
     struct bufferevent *bev_dispatcher[2];
+
+    // pipe to pusher
+    int sockpair_pusher[2];
     struct bufferevent *bev_pusher[2];
 
 };
 
 struct client_s {
-    uint64_t client_id;
+    uint64_t user_id;
     struct bufferevent *bev;
     struct evbuffer *buffer;
     // http headers
@@ -50,9 +54,9 @@ struct client_s {
 };
 
 client_t *client_create();
-void client_destroy(client_t **c);
+void client_destroy(client_t *c);
 worker_t *worker_create();
-void worker_destroy(worker_t **s);
+void worker_destroy(worker_t *s);
 int broadcast(worker_t *w, void *data, size_t length);
 int worker_start(worker_t *w);
 int worker_stop(worker_t *w);
