@@ -1,0 +1,6 @@
+109 221.4.220.234 - - [23/Mar/2007:00:00:00 +0800] "GET / HTTP/1.1" 200 14 mod_gzip: 0pct. "http://post.baidu.com/f?kz=2249392"
+568 221.4.220.224 - - [23/Mar/2007:00:00:02 +0800] "GET / HTTP/1.1" 200 14 mod_gzip: 0pct. "http://news.baidu.com"
+722 221.4.220.214 - - [23/Mar/2007:00:00:05 +0800] "GET / HTTP/1.1" 200 14 mod_gzip: 0pct. "http://news.baidu.com"
+109 221.4.220.234 - - [23/Mar/2007:00:00:00 +0800] "GET / HTTP/1.1" 200 14 mod_gzip: 0pct. "http://post.baidu.com/f?kz=2249392"
+568 221.4.220.224 - - [23/Mar/2007:00:00:02 +0800] "GET / HTTP/1.1" 200 14 mod_gzip: 0pct. "http://news.baidu.com"
+722 221.4.220.214 - - [23/Mar/2007:00:00:05 +0800] "GET / HTTP/1.1" 200 14 mod_gzip: 0pct. "http://news.baidu.com"
