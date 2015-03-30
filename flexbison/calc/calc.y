@@ -1,5 +1,7 @@
 %{
 #include <stdio.h>
+#include <string.h>
+extern int read_input(char *buffer, int *numBytesRead, int max);
 %}
 
 /* delcare token */
@@ -31,11 +33,21 @@ term: NUMBER
   ;
 
 %%
+
+const char *line = "1 + 1\n";
 main(int argc, char **argv)
 {
     yyparse();
 }
+
 yyerror(char *s)
 {
     fprintf(stderr, "error: %s\n", s);
+}
+
+int read_input(char *buffer, int *numBytesRead, int maxBytesToRead)
+{
+    strcpy(buffer, line);
+    *numBytesRead = strlen(line);
+    return 0;
 }
