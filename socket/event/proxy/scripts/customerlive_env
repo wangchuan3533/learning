@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-export PREFIX=$HOME/customerlive
-export PATH=$PATH:$PREFIX/bin
