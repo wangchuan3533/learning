@@ -1,4 +1,4 @@
-linux-learning
+learning
 ==============
 
-Just for learning linux programming
+Just for learning programming
